@@ -12,16 +12,21 @@
  *     peleador dejó descubierta y se vuelve a pintar su caja.
  *
  * Los peleadores se dibujan con sprites (sprites.c / sprites.h): 1 byte por
- * píxel con paleta, y el índice 0 es transparente. Los dos jugadores usan la
- * misma hoja con paletas distintas. Ver DibujarSprite() y DibujarCuerpo().
+ * píxel con paleta, y el índice 0 es transparente. Cada jugador tiene su
+ * personaje (tabla PERSONAJE) y cada personaje su propio tamaño de cuadro.
+ * Ver DibujarSprite() y DibujarCuerpo().
  */
 
 #include "game.h"
 #include "ili9341.h"   /* también incluye main.h (HAL) */
 #include "sprites.h"
 
-// --- NUEVO: Declaramos el escenario para que el juego pueda leer sus colores ---
+/* Escenario: imagen RGB565 de FONDO_W x FONDO_H definida en Bitmaps.h. En
+ * pantalla empieza en la fila FONDO_Y; arriba y abajo queda negro. */
 extern const uint16_t Escenario2[];
+#define FONDO_W        320
+#define FONDO_H        220
+#define FONDO_Y        10
 
 /* ------------------------------------------------------------------------ */
 /* Configuración                                                             */
@@ -32,8 +37,7 @@ extern const uint16_t Escenario2[];
 #define TICKS_SEGUNDO  30
 
 #define PISO_Y         200       /* y donde empieza el piso                  */
-#define CUERPO_W       SPR_W     /* el cuerpo es un cuadro del sprite        */
-#define CUERPO_H       SPR_H
+#define X_INICIAL      30        /* separación inicial del borde de pantalla */
 #define TICKS_CUADRO   3         /* ticks que dura cada cuadro de animación  */
 #define KO_H           20        /* alto del peleador caído                  */
 #define VEL_X          4         /* px por tick al caminar                   */
@@ -83,7 +87,7 @@ typedef struct {
 	int16_t  vida;
 	uint8_t  entrada;        /* máscara de botones en este tick              */
 	uint8_t  entradaPrev;    /* máscara del tick anterior (para flancos)     */
-	uint8_t  num;            /* 0 = J1, 1 = J2 (elige la paleta)             */
+	const Personaje *pj;     /* sprite y tamaño del cuerpo (ver sprites.h)   */
 	/* Lo que hay pintado en pantalla, para saber qué borrar y qué repintar */
 	Caja     cuerpoDib;
 	Caja     brazoDib;
@@ -97,15 +101,20 @@ typedef struct {
 typedef struct {
 	uint8_t duracion, ini, fin;
 	uint8_t alcance, alto;   /* tamaño de la caja de ataque                  */
-	uint8_t dy;              /* distancia desde la parte de arriba del cuerpo */
+	uint8_t dy;              /* altura del ataque: % del alto del cuerpo,
+	                            medido desde arriba                          */
 	uint8_t dano;
 } Ataque;
 
 static const Ataque ATAQUES[2] = {
-	/* duracion ini fin alcance alto dy dano */
-	{  8,       2,  4,  22,     10,  28,  8 },   /* golpe  (A) */
-	{ 12,       4,  7,  30,     12,  56, 14 },   /* patada (B) */
+	/* duracion ini fin alcance alto dy(%) dano */
+	{  8,       2,  4,  22,     10,  30,    8 },   /* golpe  (A) */
+	{ 12,       4,  7,  30,     12,  59,   14 },   /* patada (B) */
 };
+
+/* Personaje de cada jugador. Para cambiarlo basta con cambiar esta tabla
+ * (personajes disponibles: ryu, ryuAzul, deeJay). */
+static const Personaje *const PERSONAJE[2] = { &ryu, &deeJay };
 
 /* ------------------------------------------------------------------------ */
 /* Variables                                                                 */
@@ -213,7 +222,7 @@ static uint8_t Igual(Caja a, Caja b) {
 }
 
 static Caja CajaCuerpo(const Peleador *p) {
-	Caja c = { p->x, p->y, CUERPO_W, CUERPO_H };
+	Caja c = { p->x, p->y, p->pj->w, p->pj->h };
 	if (p->estado == P_KO) {
 		c.y = PISO_Y - KO_H;
 		c.h = KO_H;
@@ -229,8 +238,8 @@ static Caja CajaAtaque(const Peleador *p) {
 		if (p->t >= a->ini && p->t <= a->fin) {
 			c.w = a->alcance;
 			c.h = a->alto;
-			c.y = p->y + a->dy;
-			c.x = (p->dir > 0) ? p->x + CUERPO_W : p->x - a->alcance;
+			c.y = p->y + (p->pj->h * a->dy) / 100;
+			c.x = (p->dir > 0) ? p->x + p->pj->w : p->x - a->alcance;
 		}
 	}
 	return c;
@@ -247,7 +256,7 @@ static void ActualizarPeleador(Peleador *p, const Peleador *o) {
 	uint8_t in = p->entrada;
 	uint8_t nuevo = in & (uint8_t) ~p->entradaPrev;   /* flancos de subida */
 	int16_t nx = p->x;
-	const int16_t suelo = PISO_Y - CUERPO_H;
+	const int16_t suelo = PISO_Y - p->pj->h;
 
 	p->entradaPrev = in;
 	if (p->t < 255)
@@ -309,11 +318,11 @@ static void ActualizarPeleador(Peleador *p, const Peleador *o) {
 
 	/* Límites de la pantalla */
 	if (nx < 0) nx = 0;
-	if (nx > ANCHO - CUERPO_W) nx = ANCHO - CUERPO_W;
+	if (nx > ANCHO - p->pj->w) nx = ANCHO - p->pj->w;
 
 	/* Los peleadores no se atraviesan: si el movimiento en X lo metería
 	 * dentro del rival, se cancela. */
-	if (nx + CUERPO_W > o->x && nx < o->x + CUERPO_W)
+	if (nx + p->pj->w > o->x && nx < o->x + o->pj->w)
 		nx = p->x;
 	p->x = nx;
 }
@@ -353,9 +362,9 @@ static uint32_t Azar(void) {
 static uint8_t EntradaDemo(const Peleador *yo, const Peleador *otro) {
 	uint8_t hacia = (otro->x > yo->x) ? BTN_DER : BTN_IZQ;
 	uint8_t lejos = (otro->x > yo->x) ? BTN_IZQ : BTN_DER;
-	int16_t hueco = otro->x - yo->x;
-	if (hueco < 0) hueco = -hueco;
-	hueco -= CUERPO_W;
+	/* Espacio libre entre las dos cajas (cada personaje tiene su ancho) */
+	int16_t hueco = (otro->x > yo->x) ? otro->x - (yo->x + yo->pj->w)
+	                                  : yo->x - (otro->x + otro->pj->w);
 	uint32_t r = Azar();
 	if (hueco > 20)
 		return (r % 16 == 0) ? (hacia | BTN_ARRIBA) : hacia;
@@ -382,44 +391,45 @@ static void Rellenar(Caja c, uint16_t color) {
 	FillRect(c.x, c.y, c.w, c.h, color);
 }
 
-// --- MODIFICADO: Nueva función Borrar para "parchar" usando el arreglo Escenario2 ---
-static void Borrar(Caja c) {
+/* Color del escenario en el píxel (x, y) de la pantalla */
+static uint16_t ColorFondo(int16_t x, int16_t y) {
+	if (y < FONDO_Y || y >= FONDO_Y + FONDO_H)
+		return C_NEGRO;
+	/* uint32_t: el índice pasa de 65535 */
+	return Escenario2[(uint32_t) (y - FONDO_Y) * FONDO_W + (uint32_t) x];
+}
+
+/* Pinta el pedazo del escenario que cae dentro de la caja c (recortada a la
+ * pantalla). Con c = toda la pantalla dibuja el escenario completo. */
+static void DibujarFondo(Caja c) {
 	if (c.x < 0) { c.w += c.x; c.x = 0; }
 	if (c.y < 0) { c.h += c.y; c.y = 0; }
 	if (c.x + c.w > ANCHO) c.w = ANCHO - c.x;
 	if (c.y + c.h > ALTO)  c.h = ALTO - c.y;
-	if (c.w <= 0 || c.h <= 0) return;
+	if (c.w <= 0 || c.h <= 0)
+		return;
 
-	/* Abrir ventana SPI solo para el área que dejó el personaje */
 	HAL_GPIO_WritePin(LCD_CS_GPIO_Port, LCD_CS_Pin, GPIO_PIN_RESET);
 	SetWindows(c.x, c.y, c.x + c.w - 1, c.y + c.h - 1);
-
 	for (int16_t j = 0; j < c.h; j++) {
 		for (int16_t i = 0; i < c.w; i++) {
-			int16_t px = c.x + i;
-			int16_t py = c.y + j;
-
-			/* El escenario empieza en Y=10 y mide 220 de alto */
-			if (py >= 10 && py < 230 && px >= 0 && px < 320) {
-				/* uint32_t es vital aquí para que la multiplicación no desborde la memoria */
-				uint32_t index = (uint32_t)(py - 10) * 320 + (uint32_t)px;
-				uint16_t color = Escenario2[index];
-				LCD_DATA((uint8_t)(color >> 8));
-				LCD_DATA((uint8_t)color);
-			} else {
-				LCD_DATA((uint8_t)(C_NEGRO >> 8));
-				LCD_DATA((uint8_t)C_NEGRO);
-			}
+			uint16_t color = ColorFondo(c.x + i, c.y + j);
+			LCD_DATA((uint8_t) (color >> 8));
+			LCD_DATA((uint8_t) color);
 		}
 	}
 	HAL_GPIO_WritePin(LCD_CS_GPIO_Port, LCD_CS_Pin, GPIO_PIN_SET);
+}
 
+/* Borra una zona: vuelve a pintar ahí el escenario. Si la zona tocaba algo
+ * que sigue en pantalla, lo marca para repintarlo. */
+static void Borrar(Caja c) {
+	DibujarFondo(c);
 	for (uint8_t k = 0; k < 2; k++) {
 		if (Solapa(c, cajaCuerpo[k]) || Solapa(c, cajaBrazo[k]))
 			pl[k].sucio = 1;
 	}
 }
-// ---------------------------------------------------------------------------------
 
 /* Borra solo la parte de "vieja" que "nueva" ya no cubre. Así un peleador
  * que avanza 4 px borra una franja de 4 px en vez de toda su caja. */
@@ -446,10 +456,10 @@ static uint8_t Cuadro(const Peleador *p) {
 	uint8_t k, atras;
 	if (p->estado != P_CAMINA)
 		return 0;
-	k = (uint8_t) ((ticksEstado / TICKS_CUADRO) % RYU_CAMINAR_N);
+	k = (uint8_t) ((ticksEstado / TICKS_CUADRO) % p->pj->cuadros);
 	/* Si camina alejándose del rival, la animación corre al revés */
 	atras = p->entrada & ((p->dir > 0) ? BTN_IZQ : BTN_DER);
-	return atras ? (uint8_t) (RYU_CAMINAR_N - 1 - k) : k;
+	return atras ? (uint8_t) (p->pj->cuadros - 1 - k) : k;
 }
 
 /* Número que resume cómo se ve el peleador. Si cambia, hay que repintarlo. */
@@ -460,57 +470,38 @@ static uint8_t Aspecto(const Peleador *p) {
 	return a | (p->dir > 0 ? 0x80 : 0);
 }
 
-/* Dibuja un cuadro de SPR_W x SPR_H con su esquina superior izquierda en
+/* Dibuja un cuadro del personaje pj con su esquina superior izquierda en
  * (x, y).
- *   px       primer byte del cuadro (un índice de paleta por píxel)
- *   paleta   tabla de SPR_COLORES colores RGB565
+ *   cuadro   número de cuadro de la animación (0 = el primero)
  *   voltear  1 = espejo horizontal (el sprite original mira a la derecha)
  *   silueta  1 = todo el personaje en blanco (cuando recibe un golpe)
  *
- * El índice 0 es transparente: ahí se pinta el color del fondo. Como cada
- * píxel de la caja se escribe una sola vez, el personaje no parpadea.
+ * El índice 0 es transparente: ahí se pinta el píxel del escenario que
+ * queda detrás. Como cada píxel de la caja se escribe una sola vez, el
+ * personaje no parpadea.
  */
-/* Dibuja un cuadro de SPR_W x SPR_H con su esquina superior izquierda en (x, y). */
-static void DibujarSprite(int16_t x, int16_t y, const uint8_t *px,
-		const uint16_t *paleta, uint8_t voltear, uint8_t silueta) {
-	uint16_t color[SPR_COLORES];
-	int16_t i, j;
+static void DibujarSprite(int16_t x, int16_t y, const Personaje *pj,
+		uint8_t cuadro, uint8_t voltear, uint8_t silueta) {
+	const int16_t w = pj->w, h = pj->h;
+	const uint8_t *px = pj->px + (uint32_t) cuadro * w * h;
 	const int8_t paso = voltear ? -1 : 1;
 
-	if (x < 0 || y < 0 || x + SPR_W > ANCHO || y + SPR_H > ALTO)
+	if (x < 0 || y < 0 || x + w > ANCHO || y + h > ALTO)
 		return;
 
-	/* Ya no usamos color fijo para el fondo. Solo cargamos los colores del personaje */
-	for (i = 1; i < SPR_COLORES; i++)
-		color[i] = silueta ? C_BLANCO : paleta[i];
-
 	HAL_GPIO_WritePin(LCD_CS_GPIO_Port, LCD_CS_Pin, GPIO_PIN_RESET);
-	SetWindows(x, y, x + SPR_W - 1, y + SPR_H - 1);
-
-	for (j = 0; j < SPR_H; j++) {
+	SetWindows(x, y, x + w - 1, y + h - 1);
+	for (int16_t j = 0; j < h; j++) {
 		/* Volteado: la fila se lee de derecha a izquierda */
-		const uint8_t *f = px + j * SPR_W + (voltear ? SPR_W - 1 : 0);
-		for (i = 0; i < SPR_W; i++) {
-            uint16_t c;
-
-            // --- NUEVA LÓGICA DE TRANSPARENCIA MATEMÁTICA ---
-            if (*f == 0) {
-                // Si el píxel del sprite es 0 (transparente), buscamos qué color de la selva va ahí
-                int16_t py = y + j;
-                int16_t px_screen = x + i;
-
-                if (py >= 10 && py < 230 && px_screen >= 0 && px_screen < 320) {
-                    uint32_t index = (uint32_t)(py - 10) * 320 + (uint32_t)px_screen;
-                    c = Escenario2[index];
-                } else {
-                    c = C_NEGRO;
-                }
-            } else {
-                // Si no es transparente, pintamos el color normal del personaje
-			    c = color[*f];
-            }
-            // ------------------------------------------------
-
+		const uint8_t *f = px + j * w + (voltear ? w - 1 : 0);
+		for (int16_t i = 0; i < w; i++) {
+			uint16_t c;
+			if (*f == 0)
+				c = ColorFondo(x + i, y + j);       /* transparente */
+			else if (silueta)
+				c = C_BLANCO;
+			else
+				c = pj->paleta[*f];
 			f += paso;
 			LCD_DATA((uint8_t) (c >> 8));
 			LCD_DATA((uint8_t) c);
@@ -519,14 +510,14 @@ static void DibujarSprite(int16_t x, int16_t y, const uint8_t *px,
 	HAL_GPIO_WritePin(LCD_CS_GPIO_Port, LCD_CS_Pin, GPIO_PIN_SET);
 }
 
-/* Pinta el cuerpo del peleador dentro de la caja c.*/
+/* Pinta el cuerpo del peleador dentro de la caja c. */
 static void DibujarCuerpo(const Peleador *p, Caja c) {
 	if (p->estado == P_KO) {          /* todavía no hay sprite de KO */
 		Rellenar(c, C_GRIS);
 		return;
 	}
-	DibujarSprite(c.x, c.y, ryuCaminar + Cuadro(p) * (SPR_W * SPR_H),
-			ryuPaleta[p->num], p->dir < 0, p->estado == P_DANO);
+	DibujarSprite(c.x, c.y, p->pj, Cuadro(p), p->dir < 0,
+			p->estado == P_DANO);
 }
 
 static void DibujarVida(uint8_t i) {
@@ -625,12 +616,12 @@ static void EntrarPelea(void) {
 
 	for (uint8_t i = 0; i < 2; i++) {
 		Peleador *p = &pl[i];
-		p->x = (i == 0) ? 60 : ANCHO - 60 - CUERPO_W;
-		p->y = PISO_Y - CUERPO_H;
+		p->pj = PERSONAJE[i];
+		p->x = (i == 0) ? X_INICIAL : ANCHO - X_INICIAL - p->pj->w;
+		p->y = PISO_Y - p->pj->h;
 		p->vy = 0;
 		p->dir = (i == 0) ? 1 : -1;
 		p->vida = VIDA_MAX;
-		p->num = i;
 		p->entrada = 0;
 		p->entradaPrev = 0xFF;
 		p->cuerpoDib = (Caja) { 0, 0, 0, 0 };
@@ -639,9 +630,9 @@ static void EntrarPelea(void) {
 		Cambiar(p, P_QUIETO);
 	}
 
-    // --- MODIFICADO: Dibujamos el escenario en lugar de los rectángulos sólidos ---
-	LCD_Clear(C_NEGRO);
-    LCD_Sprite(0, 10, 320, 220, Escenario2, 1, 0, 0, 0);
+	/* Escenario completo. Se pinta con la misma función que después lo
+	 * restaura por pedazos, para que coincidan píxel a píxel. */
+	DibujarFondo((Caja) { 0, 0, ANCHO, ALTO });
 
 	DibujarVida(0);
 	DibujarVida(1);
