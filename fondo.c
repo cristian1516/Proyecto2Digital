@@ -14,6 +14,7 @@ uint8_t  fondoPx[FONDO_W * FONDO_H_MAX];
 uint16_t fondoPal[256];
 uint16_t fondoAlto;
 uint16_t fondoY;
+uint16_t fondoPiso;
 
 static uint8_t montada;        /* 1 = la tarjeta ya está montada */
 static uint8_t codigoFatFs;
@@ -21,7 +22,7 @@ static uint8_t codigoFatFs;
 /* Encabezado del archivo: 12 bytes, sin relleno */
 typedef struct {
 	char     firma[4];
-	uint16_t ancho, alto, colores, reservado;
+	uint16_t ancho, alto, colores, piso;
 } Encabezado;
 
 uint8_t Fondo_CodigoFatFs(void) {
@@ -69,7 +70,6 @@ uint8_t Fondo_Cargar(const char *nombre) {
 	FRESULT r;
 	uint8_t res = FONDO_OK;
 
-	fondoAlto = 0;                  /* mientras se carga no hay escenario */
 	if (Montar() != FONDO_OK)
 		return FONDO_ERR_SD;
 
@@ -87,8 +87,10 @@ uint8_t Fondo_Cargar(const char *nombre) {
 			|| e.alto > FONDO_H_MAX || e.colores == 0 || e.colores > 256)
 		res = FONDO_ERR_FORMATO;
 
-	/* Paleta */
+	/* Paleta. Desde aquí se pisa lo que había en la RAM; si el archivo no
+	 * existe o no sirve, el escenario anterior sigue intacto. */
 	if (res == FONDO_OK) {
+		fondoAlto = 0;
 		r = f_read(&USERFile, fondoPal, e.colores * 2u, &n);
 		if (r != FR_OK || n != e.colores * 2u)
 			res = FONDO_ERR_DATOS;
@@ -108,6 +110,7 @@ uint8_t Fondo_Cargar(const char *nombre) {
 
 	if (res == FONDO_OK) {
 		fondoY = (uint16_t) ((FONDO_H_MAX - e.alto) / 2);
+		fondoPiso = e.piso;
 		fondoAlto = e.alto;
 	}
 	return res;
