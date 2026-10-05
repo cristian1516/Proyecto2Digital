@@ -1,6 +1,8 @@
 /*
  * game.c
  *
+ * Copiar en Core/Src.
+ *
  * Estructura:
  *   - Game_Update() corre un tick fijo de 33 ms sin bloquear (no usa HAL_Delay).
  *   - Máquina de estados del juego: MENU -> PELEA -> GANADOR -> MENU.
@@ -25,7 +27,11 @@
 #include "sprites.h"
 #include "fondo.h"     /* escenario: se carga de la microSD a la RAM */
 
-#define ARCHIVO_FONDO  "Fondo.bin"   /* nombre del escenario en la SD */
+/* Escenarios: archivos en la raíz de la microSD. Se usan por turnos, uno
+ * distinto en cada pelea; si alguno no está en la tarjeta se salta. Para
+ * agregar otro basta con copiar su archivo a la SD y ponerlo en la lista. */
+static const char *const ESCENARIOS[] = { "Fondo.bin", "Honda.bin" };
+#define N_ESCENARIOS   (sizeof ESCENARIOS / sizeof ESCENARIOS[0])
 
 /* ------------------------------------------------------------------------ */
 /* Configuración                                                             */
@@ -35,7 +41,7 @@
 #define TICK_MS        33        /* ~30 cuadros por segundo                  */
 #define TICKS_SEGUNDO  30
 
-#define PISO_Y         200       /* y donde empieza el piso                  */
+#define PISO_NORMAL    200       /* y de los pies si el escenario no la trae */
 #define X_INICIAL      30        /* separación inicial del borde de pantalla */
 #define TICKS_CUADRO   3         /* ticks que dura cada cuadro de animación  */
 #define KO_H           20        /* alto del peleador caído                  */
@@ -120,7 +126,14 @@ static const Personaje *const PERSONAJE[2] = { &ryu, &deeJay };
 /* ------------------------------------------------------------------------ */
 static EstadoJuego estadoJuego;
 static Peleador    pl[2];
-static uint8_t     errorFondo;       /* resultado de cargar el escenario     */
+/* Último resultado de cargar cada escenario de la lista (FONDO_OK = bien)
+ * y el código de FatFs que lo acompañó. Se muestran en el menú. */
+static uint8_t     errorEsc[N_ESCENARIOS];
+static uint8_t     fatfsEsc[N_ESCENARIOS];
+static uint8_t     escenario;        /* índice del escenario que toca cargar */
+static uint8_t     escenarioRam = 0xFF;  /* índice del que está en la RAM    */
+static uint8_t     sinTarjeta;       /* la SD no respondió: no reintentar    */
+static int16_t     pisoY = PISO_NORMAL;  /* y donde se paran los peleadores  */
 static uint32_t    ultimoTick;
 static uint16_t    ticksEstado;      /* ticks desde que se entró al estado   */
 static uint8_t     tiempo, tiempoDib;
@@ -130,6 +143,8 @@ static uint8_t     ganador;          /* 1, 2 o 0 = empate                    */
 static uint8_t     prevMenu;         /* botones del tick anterior en menús   */
 static uint8_t     demo;             /* 1 = pelea automática de demostración */
 static uint32_t    semilla = 12345;
+
+static void CargarEscenario(void);
 
 /* Cajas del tick actual (las usa el dibujado) */
 static Caja cajaCuerpo[2], cajaBrazo[2];
@@ -224,7 +239,7 @@ static uint8_t Igual(Caja a, Caja b) {
 static Caja CajaCuerpo(const Peleador *p) {
 	Caja c = { p->x, p->y, p->pj->w, p->pj->h };
 	if (p->estado == P_KO) {
-		c.y = PISO_Y - KO_H;
+		c.y = pisoY - KO_H;
 		c.h = KO_H;
 	}
 	return c;
@@ -256,7 +271,7 @@ static void ActualizarPeleador(Peleador *p, const Peleador *o) {
 	uint8_t in = p->entrada;
 	uint8_t nuevo = in & (uint8_t) ~p->entradaPrev;   /* flancos de subida */
 	int16_t nx = p->x;
-	const int16_t suelo = PISO_Y - p->pj->h;
+	const int16_t suelo = pisoY - p->pj->h;
 
 	p->entradaPrev = in;
 	if (p->t < 255)
@@ -587,6 +602,41 @@ static void DibujarPelea(void) {
 /* ------------------------------------------------------------------------ */
 /* Estados del juego                                                         */
 /* ------------------------------------------------------------------------ */
+/* Copia el texto s al final de d (como máximo n letras) y devuelve dónde
+ * quedó el final, para seguir pegando. */
+static char *Pegar(char *d, const char *s, uint8_t n) {
+	while (*s && n--)
+		*d++ = *s++;
+	*d = 0;
+	return d;
+}
+
+/* Dos renglones al pie del menú: qué escenario está cargado para la próxima
+ * pelea y, si algún archivo de la lista no se pudo cargar, cuál y por qué.
+ * El primer número es el error de fondo.h y el segundo el código de FatFs
+ * (ERROR 2, FATFS 04 = el archivo no está en la tarjeta). */
+static void DibujarEstadoEscenarios(void) {
+	char txt[41];
+	char *t;
+
+	t = Pegar(txt, "ESCENARIO: ", 40);
+	Pegar(t, Fondo_Listo() ? ESCENARIOS[escenarioRam] : "NINGUNO", 12);
+	LCD_Print(txt, 8, 204, 1, C_GRIS, C_NEGRO);
+
+	for (uint8_t i = 0; i < N_ESCENARIOS; i++) {
+		if (errorEsc[i] == FONDO_OK)
+			continue;
+		t = Pegar(txt, "FALLO ", 40);
+		t = Pegar(t, ESCENARIOS[i], 12);
+		t = Pegar(t, ": ERROR 0, FATFS 00", 40);
+		t[-11] = (char) ('0' + errorEsc[i]);
+		t[-2]  = (char) ('0' + fatfsEsc[i] / 10 % 10);
+		t[-1]  = (char) ('0' + fatfsEsc[i] % 10);
+		LCD_Print(txt, 8, 220, 1, C_J1, C_NEGRO);
+		break;                          /* solo cabe uno: el primero */
+	}
+}
+
 static void EntrarMenu(void) {
 	estadoJuego = EST_MENU;
 	ticksEstado = 0;
@@ -594,15 +644,7 @@ static void EntrarMenu(void) {
 	LCD_Clear(C_NEGRO);
 	LCD_Print("STREET FIGHTER", 48, 70, 2, C_AMARILLO, C_NEGRO);
 	LCD_Print("J1 vs J2", 96, 100, 2, C_BLANCO, C_NEGRO);
-	if (!Fondo_Listo()) {
-		/* Aviso para saber por qué se ve un fondo liso. El primer número
-		 * es el error de fondo.h y el segundo el código de FatFs. */
-		char txt[] = "SIN ESCENARIO: ERROR 0, FATFS 00";
-		txt[21] = (char) ('0' + errorFondo);
-		txt[30] = (char) ('0' + Fondo_CodigoFatFs() / 10 % 10);
-		txt[31] = (char) ('0' + Fondo_CodigoFatFs() % 10);
-		LCD_Print(txt, 32, 220, 1, C_GRIS, C_NEGRO);
-	}
+	DibujarEstadoEscenarios();
 	Game_Sonido(SND_MENU);
 }
 
@@ -619,7 +661,7 @@ static void EntrarPelea(void) {
 		Peleador *p = &pl[i];
 		p->pj = PERSONAJE[i];
 		p->x = (i == 0) ? X_INICIAL : ANCHO - X_INICIAL - p->pj->w;
-		p->y = PISO_Y - p->pj->h;
+		p->y = pisoY - p->pj->h;
 		p->vy = 0;
 		p->dir = (i == 0) ? 1 : -1;
 		p->vida = VIDA_MAX;
@@ -730,18 +772,51 @@ static void TickPelea(void) {
 }
 
 static void TickGanador(void) {
-	if (PresionaronA() || (demo && ticksEstado > 3 * TICKS_SEGUNDO))
+	if (PresionaronA() || (demo && ticksEstado > 3 * TICKS_SEGUNDO)) {
+		CargarEscenario();    /* el de la próxima pelea */
 		EntrarMenu();
+	}
 }
 
 /* ------------------------------------------------------------------------ */
 /* Funciones públicas                                                        */
 /* ------------------------------------------------------------------------ */
+/* Deja en la RAM el escenario que toca y pasa el turno al siguiente. Leer
+ * la tarjeta tarda, por eso se hace entre peleas y no durante una. */
+static void CargarEscenario(void) {
+	if (sinTarjeta)
+		return;
+	for (uint8_t k = 0; k < N_ESCENARIOS; k++) {
+		uint8_t i = (uint8_t) ((escenario + k) % N_ESCENARIOS);
+		uint8_t error = FONDO_OK;
+		if (i != escenarioRam || !Fondo_Listo()) {  /* si no, ya está cargado */
+			error = Fondo_Cargar(ESCENARIOS[i]);
+			fatfsEsc[i] = Fondo_CodigoFatFs();
+		}
+		errorEsc[i] = error;
+
+		if (error == FONDO_OK) {
+			escenarioRam = i;
+			escenario = (uint8_t) ((i + 1) % N_ESCENARIOS);
+			/* Línea del piso: la del archivo si la trae y es razonable */
+			pisoY = (fondoPiso >= 180 && fondoPiso <= ALTO) ? (int16_t) fondoPiso
+			                                                : PISO_NORMAL;
+			return;
+		}
+		if (error == FONDO_ERR_SD) {                /* no hay tarjeta */
+			sinTarjeta = 1;
+			break;
+		}
+	}
+	pisoY = PISO_NORMAL;                            /* fondo liso */
+}
+
 void Game_Init(void) {
-	/* El escenario se lee de la SD una sola vez, al encender. Si main.c ya
-	 * lo dejó cargado (al guardarlo), no se vuelve a leer. */
-	if (!Fondo_Listo())
-		errorFondo = Fondo_Cargar(ARCHIVO_FONDO);
+	/* Si main.c acaba de guardar "Fondo.bin" ya quedó en la RAM y no se
+	 * vuelve a leer. */
+	if (Fondo_Listo())
+		escenarioRam = 0;
+	CargarEscenario();
 	ultimoTick = HAL_GetTick();
 	EntrarMenu();
 }
