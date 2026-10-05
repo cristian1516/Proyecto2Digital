@@ -11,7 +11,9 @@
  *   bytes 4-5    ancho en píxeles (siempre 320)
  *   bytes 6-7    alto en píxeles (hasta 240)
  *   bytes 8-9    N = cantidad de colores de la paleta (1 a 256)
- *   bytes 10-11  0 (reservado)
+ *   bytes 10-11  fila de la pantalla donde se paran los peleadores (la
+ *                línea del piso de este escenario); 0 = no se indica y el
+ *                juego usa su valor normal
  *   después      N colores RGB565, 2 bytes cada uno
  *   después      ancho x alto bytes: un índice de paleta por píxel, por
  *                filas, de arriba hacia abajo y de izquierda a derecha
@@ -42,7 +44,9 @@ enum {
 	FONDO_ERR_VERIFICAR    /* 6: lo guardado no coincide con la imagen      */
 };
 
-/* Copia el escenario de la SD a la RAM. Devuelve FONDO_OK o un error. */
+/* Copia el escenario de la SD a la RAM. Devuelve FONDO_OK o un error. Si el
+ * archivo no existe o no tiene el formato, lo que ya estaba cargado no se
+ * toca. */
 uint8_t Fondo_Cargar(const char *nombre);
 
 /* Convierte una imagen RGB565 de FONDO_W x alto (por ejemplo un arreglo de
@@ -60,6 +64,7 @@ extern uint8_t  fondoPx[FONDO_W * FONDO_H_MAX];
 extern uint16_t fondoPal[256];
 extern uint16_t fondoAlto;     /* 0 = no hay escenario cargado */
 extern uint16_t fondoY;        /* fila de la pantalla donde empieza */
+extern uint16_t fondoPiso;     /* línea del piso del escenario; 0 = no se indica */
 
 static inline uint8_t Fondo_Listo(void) {
 	return fondoAlto != 0;
