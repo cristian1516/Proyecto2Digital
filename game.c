@@ -1,8 +1,6 @@
 /*
  * game.c
  *
- * Copiar en Core/Src.
- *
  * Estructura:
  *   - Game_Update() corre un tick fijo de 33 ms sin bloquear (no usa HAL_Delay).
  *   - Máquina de estados del juego: MENU -> PELEA -> GANADOR -> MENU.
@@ -15,18 +13,19 @@
  * píxel con paleta, y el índice 0 es transparente. Cada jugador tiene su
  * personaje (tabla PERSONAJE) y cada personaje su propio tamaño de cuadro.
  * Ver DibujarSprite() y DibujarCuerpo().
+ *
+ * El escenario está en la microSD (fondo.c / fondo.h). Se copia a la RAM
+ * una vez, en Game_Init(), y de ahí se lee para pintarlo completo, para
+ * restaurar lo que un peleador deja descubierto y para los píxeles
+ * transparentes del sprite. Sin tarjeta el juego funciona con fondo liso.
  */
 
 #include "game.h"
 #include "ili9341.h"   /* también incluye main.h (HAL) */
 #include "sprites.h"
+#include "fondo.h"     /* escenario: se carga de la microSD a la RAM */
 
-/* Escenario: imagen RGB565 de FONDO_W x FONDO_H definida en Bitmaps.h. En
- * pantalla empieza en la fila FONDO_Y; arriba y abajo queda negro. */
-extern const uint16_t Escenario2[];
-#define FONDO_W        320
-#define FONDO_H        220
-#define FONDO_Y        10
+#define ARCHIVO_FONDO  "Fondo.bin"   /* nombre del escenario en la SD */
 
 /* ------------------------------------------------------------------------ */
 /* Configuración                                                             */
@@ -121,6 +120,7 @@ static const Personaje *const PERSONAJE[2] = { &ryu, &deeJay };
 /* ------------------------------------------------------------------------ */
 static EstadoJuego estadoJuego;
 static Peleador    pl[2];
+static uint8_t     errorFondo;       /* resultado de cargar el escenario     */
 static uint32_t    ultimoTick;
 static uint16_t    ticksEstado;      /* ticks desde que se entró al estado   */
 static uint8_t     tiempo, tiempoDib;
@@ -391,14 +391,6 @@ static void Rellenar(Caja c, uint16_t color) {
 	FillRect(c.x, c.y, c.w, c.h, color);
 }
 
-/* Color del escenario en el píxel (x, y) de la pantalla */
-static uint16_t ColorFondo(int16_t x, int16_t y) {
-	if (y < FONDO_Y || y >= FONDO_Y + FONDO_H)
-		return C_NEGRO;
-	/* uint32_t: el índice pasa de 65535 */
-	return Escenario2[(uint32_t) (y - FONDO_Y) * FONDO_W + (uint32_t) x];
-}
-
 /* Pinta el pedazo del escenario que cae dentro de la caja c (recortada a la
  * pantalla). Con c = toda la pantalla dibuja el escenario completo. */
 static void DibujarFondo(Caja c) {
@@ -413,7 +405,7 @@ static void DibujarFondo(Caja c) {
 	SetWindows(c.x, c.y, c.x + c.w - 1, c.y + c.h - 1);
 	for (int16_t j = 0; j < c.h; j++) {
 		for (int16_t i = 0; i < c.w; i++) {
-			uint16_t color = ColorFondo(c.x + i, c.y + j);
+			uint16_t color = Fondo_Color(c.x + i, c.y + j);
 			LCD_DATA((uint8_t) (color >> 8));
 			LCD_DATA((uint8_t) color);
 		}
@@ -497,7 +489,7 @@ static void DibujarSprite(int16_t x, int16_t y, const Personaje *pj,
 		for (int16_t i = 0; i < w; i++) {
 			uint16_t c;
 			if (*f == 0)
-				c = ColorFondo(x + i, y + j);       /* transparente */
+				c = Fondo_Color(x + i, y + j);      /* transparente */
 			else if (silueta)
 				c = C_BLANCO;
 			else
@@ -602,6 +594,15 @@ static void EntrarMenu(void) {
 	LCD_Clear(C_NEGRO);
 	LCD_Print("STREET FIGHTER", 48, 70, 2, C_AMARILLO, C_NEGRO);
 	LCD_Print("J1 vs J2", 96, 100, 2, C_BLANCO, C_NEGRO);
+	if (!Fondo_Listo()) {
+		/* Aviso para saber por qué se ve un fondo liso. El primer número
+		 * es el error de fondo.h y el segundo el código de FatFs. */
+		char txt[] = "SIN ESCENARIO: ERROR 0, FATFS 00";
+		txt[21] = (char) ('0' + errorFondo);
+		txt[30] = (char) ('0' + Fondo_CodigoFatFs() / 10 % 10);
+		txt[31] = (char) ('0' + Fondo_CodigoFatFs() % 10);
+		LCD_Print(txt, 32, 220, 1, C_GRIS, C_NEGRO);
+	}
 	Game_Sonido(SND_MENU);
 }
 
@@ -737,6 +738,10 @@ static void TickGanador(void) {
 /* Funciones públicas                                                        */
 /* ------------------------------------------------------------------------ */
 void Game_Init(void) {
+	/* El escenario se lee de la SD una sola vez, al encender. Si main.c ya
+	 * lo dejó cargado (al guardarlo), no se vuelve a leer. */
+	if (!Fondo_Listo())
+		errorFondo = Fondo_Cargar(ARCHIVO_FONDO);
 	ultimoTick = HAL_GetTick();
 	EntrarMenu();
 }
