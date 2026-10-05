@@ -18,14 +18,13 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "fatfs.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "ili9341.h"
 #include "game.h"
-#include "fatfs_sd.h"
-#include "ff.h"
-#include "Bitmaps.h"
+#include "fondo.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -48,6 +47,21 @@
 #define ENTRADA_PC     0
 #define ENTRADA_ESP32  0
 #define SALIDA_AUDIO   0
+
+/* Grabador de escenario.
+ *
+ *   1  Al encender convierte el arreglo Escenario2 (Bitmaps.h, en la flash)
+ *      y lo guarda en la microSD como "Fondo.bin". La pantalla dice si
+ *      quedó guardado o qué error hubo. Basta hacerlo una vez por imagen.
+ *   0  Uso normal: el juego lee "Fondo.bin" de la SD y Bitmaps.h ya no se
+ *      compila, así que el escenario deja de ocupar 141 kB de flash.
+ */
+#define GRABAR_FONDO   1
+
+#if GRABAR_FONDO
+#include "Bitmaps.h"             /* aquí está definido Escenario2 */
+#define GRABAR_ALTO    220       /* alto de Escenario2 (el ancho es 320) */
+#endif
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -65,11 +79,6 @@ static uint8_t rxPC;      /* byte recibido de la terminal de la PC */
 #if ENTRADA_ESP32
 static uint8_t rxESP;     /* byte recibido del ESP32 receptor */
 #endif
-
-FATFS fs;
-FIL fil;
-FRESULT fres;
-extern const uint16_t Escenario2[];
 
 /* USER CODE END PV */
 
@@ -116,45 +125,34 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_SPI1_Init();
+  MX_FATFS_Init();
   /* USER CODE BEGIN 2 */
   LCD_Init();
 
-  // Inicializamos la pantalla
-  //LCD_Clear(0x0FAA);
-
-  // Dibujamos el escenario en la pantalla para verlo
-  //LCD_Sprite(0, 10, 320, 220, Escenario2, 1, 0, 0, 0);
-
-  Game_Init();
-
-  // --- RUTINA PARA GUARDAR EL ESCENARIO EN LA SD ---
-
-  /*UINT bytes_escritos; // Variable obligatoria para que f_write sepa cuánto guardó
-
-  // 1. Montar el sistema de archivos de la tarjeta SD
-  fres = f_mount(&fs, "/", 0);
-
-  if (fres == FR_OK) {
-
-      // 2. Crear o abrir el archivo "Fondo.bin".
-      // FA_CREATE_ALWAYS asegura que si ya existe, lo sobrescribe desde cero
-      fres = f_open(&fil, "Fondo.bin", FA_WRITE | FA_CREATE_ALWAYS);
-
-      if (fres == FR_OK) {
-
-          // 3. Escribir todo el arreglo Escenario2 en la SD
-          // sizeof(Escenario2) calcula automáticamente el tamaño total de tu imagen en bytes
-          f_write(&fil, Escenario2, sizeof(Escenario2), &bytes_escritos);
-
-          // 4. Cerrar el archivo. CRÍTICO: Si no se cierra, los datos no se guardan
-          f_close(&fil);
-      }
+#if GRABAR_FONDO
+  /* Guarda el escenario en la SD y avisa en pantalla cómo salió */
+  {
+    uint8_t r;
+    LCD_Clear(0x0000);
+    LCD_Print("GUARDANDO FONDO", 40, 90, 2, 0xFFFF, 0x0000);
+    r = Fondo_Guardar("Fondo.bin", Escenario2, GRABAR_ALTO);
+    if (r == FONDO_OK) {
+      LCD_Print("FONDO GUARDADO ", 40, 90, 2, 0x07E0, 0x0000);
+    } else {
+      /* Primer número: error de fondo.h. Segundo: código de FatFs. */
+      char txt[] = "ERROR 0  FATFS 00";
+      txt[6]  = (char) ('0' + r);
+      txt[15] = (char) ('0' + Fondo_CodigoFatFs() / 10 % 10);
+      txt[16] = (char) ('0' + Fondo_CodigoFatFs() % 10);
+      LCD_Print("NO SE GUARDO   ", 40, 90, 2, 0xF800, 0x0000);
+      LCD_Print(txt, 24, 120, 2, 0xFFFF, 0x0000);
+    }
+    HAL_Delay(3000);
   }
+#endif
 
-  // 5. Desmontar la unidad de forma segura
-  f_mount(NULL, "", 1);
-
-
+  /* Carga el escenario de la SD (si no quedó cargado arriba) y abre el menú */
+  Game_Init();
 
   /* Recepción por interrupción, un byte a la vez */
 #if ENTRADA_PC
