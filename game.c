@@ -51,7 +51,10 @@ static const char *const ESCENARIOS[] = { "Fondo.bin", "Honda.bin" };
 #define X_INICIAL      20        /* al empezar, cuánto se separa cada peleador
                                     de su tope en el borde de la pantalla    */
 #define TICKS_CUADRO   3         /* ticks que dura cada cuadro de animación  */
-#define KO_H           20        /* alto del peleador caído                  */
+#define KO_H           20        /* alto del rectángulo de KO, para personajes
+                                    que no tienen sprite de KO               */
+#define TICKS_KO       4         /* ticks que dura cada cuadro de la caída   */
+#define VEL_KO         4         /* px por tick que retrocede mientras cae   */
 #define VEL_X          4         /* px por tick al caminar                   */
 #define VEL_SALTO      (-14)     /* velocidad inicial del salto (px/tick)    */
 #define GRAVEDAD       2         /* px/tick^2                                */
@@ -130,7 +133,7 @@ typedef struct {
 } Capa;
 
 enum {
-	CUERPO,     /* el sprite del peleador (o un rectángulo gris si está en KO) */
+	CUERPO,     /* el sprite del peleador                                      */
 	BRAZO       /* rectángulo del ataque, para personajes sin sprite de ataque */
 };
 
@@ -351,6 +354,10 @@ static void ActualizarPeleador(Peleador *p, const Peleador *o) {
 		break;
 
 	default:   /* P_KO */
+		/* Sale despedido hacia atrás mientras duran los cuadros de la
+		 * caída; con el último (tendido en el piso) ya no se mueve. */
+		if (p->pj->ko.n > 1 && p->t < (p->pj->ko.n - 1) * TICKS_KO)
+			nx -= VEL_KO * p->dir;
 		break;
 	}
 
@@ -616,6 +623,17 @@ static const Cuadro *CuadroActual(const Peleador *p) {
 		const Animacion *an = &pj->ataque[k];
 		if (an->n > 0)
 			return &an->cuadros[CuadroAtaque(an, &ATAQUES[k], p->t)];
+	} else if (p->estado == P_KO && pj->ko.n > 0) {
+		/* Caída: un cuadro cada TICKS_KO ticks, y el último se queda */
+		const uint8_t ultimo = (uint8_t) (pj->ko.n - 1);
+		uint8_t k = (uint8_t) (p->t / TICKS_KO);
+		if (k > ultimo)
+			k = ultimo;
+		/* El último cuadro es tendido en el piso. Si lo noquearon en el
+		 * aire, se queda en el anterior hasta que termina de caer. */
+		if (k == ultimo && ultimo > 0 && p->y < pisoY - pj->cuerpoH)
+			k = (uint8_t) (ultimo - 1);
+		return &pj->ko.cuadros[k];
 	} else if (p->estado == P_CAMINA) {
 		uint8_t k = (uint8_t) ((ticksEstado / TICKS_CUADRO) % pj->caminar.n);
 		/* Si camina alejándose del rival, la animación corre al revés */
@@ -638,9 +656,9 @@ static Capa CapaCuerpo(const Peleador *p) {
 	const Cuadro *q;
 	int16_t centro, pies;
 
-	if (p->estado == P_KO) {            /* todavía no hay sprite de KO */
-		c.caja = CajaCuerpo(p);
-		c.color = C_GRIS;
+	if (p->estado == P_KO && p->pj->ko.n == 0) {
+		c.caja = CajaCuerpo(p);         /* personaje sin sprite de KO: */
+		c.color = C_GRIS;               /* un rectángulo gris en el piso */
 		return c;
 	}
 
@@ -659,6 +677,16 @@ static Capa CapaCuerpo(const Peleador *p) {
 	c.voltear = (p->dir < 0);
 	c.silueta = (p->estado == P_DANO);  /* al recibir un golpe: todo blanco */
 	c.color = C_BLANCO;
+
+	if (p->estado == P_KO) {
+		/* Los cuadros de KO son anchos y quedan detrás del cuerpo. Si el
+		 * peleador cae junto al borde, se corren hacia adentro para que se
+		 * vean completos. */
+		if (c.caja.x < 0)
+			c.caja.x = 0;
+		if (c.caja.x + c.caja.w > ANCHO)
+			c.caja.x = ANCHO - c.caja.w;
+	}
 	return c;
 }
 
