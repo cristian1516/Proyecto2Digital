@@ -581,23 +581,30 @@ static void Anotar(Caja c) {
 	zonas[nZonas++] = c;
 }
 
-/* Cuadro del ataque que toca en el tick t. El último cuadro de la animación
- * (brazo o pierna extendidos) se ve durante los ticks activos; los demás se
- * reparten antes, como preparación, y después al revés, al recoger. */
+/* Cuadro del ataque que toca en el tick t. El cuadro "activo" de la
+ * animación (brazo o pierna extendidos) se ve durante los ticks en que el
+ * ataque hace daño. Los cuadros anteriores a él se reparten antes, como
+ * preparación. Después van los cuadros que le siguen; si la animación no
+ * tiene, se repiten los de preparación al revés. */
 static uint8_t CuadroAtaque(const Animacion *an, const Ataque *a, uint8_t t) {
-	const uint8_t ultimo = (uint8_t) (an->n - 1);
+	const uint8_t activo = an->activo;
+	const uint8_t despues = (uint8_t) (an->n - 1 - activo);   /* cuadros tras el activo */
 	uint8_t recoger, k;
 
-	if (ultimo == 0 || (t >= a->ini && t <= a->fin))
-		return ultimo;
-	if (t < a->ini)
-		return (uint8_t) (t * ultimo / a->ini);
+	if (t >= a->ini && t <= a->fin)
+		return activo;
+	if (t < a->ini)                                    /* preparación */
+		return (uint8_t) (t * activo / a->ini);
 
 	recoger = (uint8_t) (a->duracion - 1 - a->fin);    /* ticks que quedan */
 	k = (uint8_t) (t - a->fin - 1);                    /* 0, 1, 2...       */
 	if (k >= recoger)
 		return 0;
-	return (uint8_t) (ultimo - 1 - k * ultimo / recoger);
+	if (despues > 0)
+		return (uint8_t) (activo + 1 + k * despues / recoger);
+	if (activo == 0)
+		return 0;
+	return (uint8_t) (activo - 1 - k * activo / recoger);
 }
 
 /* Cuadro de sprite que le toca al peleador en este tick */
