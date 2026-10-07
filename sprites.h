@@ -40,11 +40,16 @@ typedef struct {
 typedef struct {
 	const Cuadro *cuadros;
 	uint8_t  n;
+	uint8_t  activo;      /* solo en los ataques: el cuadro del golpe, con el
+	                         brazo o la pierna extendidos. Los cuadros de
+	                         antes son la preparación; los de después, si
+	                         hay, son para recoger el brazo o la pierna     */
 } Animacion;
 
 /* Zona que hace daño mientras el ataque está activo: un rectángulo delante
- * del personaje. Sale del último cuadro del ataque (el brazo o la pierna
- * extendidos). */
+ * del personaje. Sale del cuadro activo del ataque: es lo que sobresale de
+ * la pose en guardia. Para que un ataque llegue más o menos lejos basta con
+ * cambiar aquí su ancho (w). */
 typedef struct {
 	uint8_t  dx;          /* del centro del cuerpo a donde empieza, hacia adelante */
 	uint8_t  dy;          /* de la parte de arriba del cuerpo hacia abajo          */
