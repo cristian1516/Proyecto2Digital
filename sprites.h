@@ -23,6 +23,10 @@
  *
  * El cuerpo (cuerpoW x cuerpoH) es la caja que se usa para las colisiones.
  * Es más angosta que el dibujo: las manos y los pies sobresalen de ella.
+ *
+ * Los cuadros de KO se colocan distinto: el borde de adelante del cuadro va
+ * en el frente del cuerpo y todo lo demás queda detrás, porque el peleador
+ * cae hacia atrás desde donde estaba parado.
  */
 #ifndef INC_SPRITES_H_
 #define INC_SPRITES_H_
@@ -64,6 +68,9 @@ typedef struct {
 	                             del cuerpo: el cuerpo no se acerca más que
 	                             esto al borde de la pantalla                */
 	Animacion caminar;        /* el cuadro 0 es también la pose en guardia   */
+	Animacion ko;             /* caída al perder: los cuadros se ven una vez,
+	                             en orden, y el último (tendido en el piso)
+	                             se queda. Si n = 0, se dibuja un rectángulo  */
 	Animacion ataque[2];      /* [0] golpe, [1] patada. Si n = 0, el ataque
 	                             se dibuja como un rectángulo                */
 	ZonaGolpe zona[2];        /* [0] golpe, [1] patada                       */
