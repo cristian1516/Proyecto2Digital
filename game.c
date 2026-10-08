@@ -10,6 +10,9 @@
  *   - Las colisiones usan AABB (cajas alineadas a los ejes), como en la clase.
  *   - El dibujado solo repinta las zonas de la pantalla donde algo cambió.
  *
+ * Controles: flechas para caminar y saltar, A golpe, B patada, y mantener
+ * ABAJO para cubrirse (un golpe cubierto no quita vida).
+ *
  * Los peleadores se dibujan con sprites (sprites.c / sprites.h): 1 byte por
  * píxel con paleta, y el índice 0 es transparente. Cada jugador tiene su
  * personaje (tabla PERSONAJE). Un personaje tiene dos cajas distintas:
@@ -39,9 +42,9 @@
 static const char *const ESCENARIOS[] = { "Fondo.bin", "Honda.bin" };
 #define N_ESCENARIOS   (sizeof ESCENARIOS / sizeof ESCENARIOS[0])
 
-/* ------------------------------------------------------------------------ */
+
 /* Configuración                                                             */
-/* ------------------------------------------------------------------------ */
+
 #define ANCHO          320
 #define ALTO           240
 #define TICK_MS        33        /* ~30 cuadros por segundo                  */
@@ -55,6 +58,9 @@ static const char *const ESCENARIOS[] = { "Fondo.bin", "Honda.bin" };
                                     que no tienen sprite de KO               */
 #define TICKS_KO       4         /* ticks que dura cada cuadro de la caída   */
 #define VEL_KO         4         /* px por tick que retrocede mientras cae   */
+#define TICKS_DANO     8         /* ticks que dura el golpe recibido         */
+#define TICKS_EMPUJE   4         /* ticks que retrocede al cubrir un golpe   */
+#define VEL_EMPUJE     2         /* px por tick de ese retroceso             */
 #define VEL_X          4         /* px por tick al caminar                   */
 #define VEL_SALTO      (-14)     /* velocidad inicial del salto (px/tick)    */
 #define GRAVEDAD       2         /* px/tick^2                                */
@@ -81,13 +87,14 @@ static const char *const ESCENARIOS[] = { "Fondo.bin", "Honda.bin" };
 #define C_VIDA         0x07E0
 #define C_VIDA_FONDO   0x8000
 
-/* ------------------------------------------------------------------------ */
+
 /* Tipos                                                                     */
-/* ------------------------------------------------------------------------ */
+
 typedef enum { EST_MENU, EST_PELEA, EST_GANADOR } EstadoJuego;
 
 typedef enum {
-	P_QUIETO, P_CAMINA, P_SALTO, P_GOLPE, P_PATADA, P_DANO, P_KO
+	P_QUIETO, P_CAMINA, P_SALTO, P_GOLPE, P_PATADA, P_DANO, P_KO,
+	P_CUBRE     /* cubriéndose: mientras se mantenga ABAJO */
 } EstadoPeleador;
 
 /* Caja alineada a los ejes: esquina superior izquierda, ancho y alto */
@@ -100,6 +107,8 @@ typedef struct {
 	uint8_t  estado;         /* EstadoPeleador                               */
 	uint8_t  t;              /* ticks que lleva en el estado actual          */
 	uint8_t  conecto;        /* el ataque actual ya hizo daño                */
+	uint8_t  empuje;         /* ticks de retroceso que le quedan por haber
+	                            cubierto un golpe                            */
 	int16_t  vida;
 	uint8_t  entrada;        /* máscara de botones en este tick              */
 	uint8_t  entradaPrev;    /* máscara del tick anterior (para flancos)     */
@@ -129,7 +138,7 @@ typedef struct {
 	const uint16_t *paleta;
 	uint16_t color;           /* color del rectángulo, o de la silueta       */
 	uint8_t  voltear;         /* 1 = espejo horizontal (mira a la izquierda) */
-	uint8_t  silueta;         /* 1 = todo el sprite de un solo color         */
+	uint8_t  silueta;         /* 1 = el sprite completo de un solo color         */
 } Capa;
 
 enum {
@@ -141,9 +150,8 @@ enum {
  * (personajes disponibles: ryu, ryuAzul, deeJay). */
 static const Personaje *const PERSONAJE[2] = { &ryu, &deeJay };
 
-/* ------------------------------------------------------------------------ */
 /* Variables                                                                 */
-/* ------------------------------------------------------------------------ */
+
 static EstadoJuego estadoJuego;
 static Peleador    pl[2];
 /* Último resultado de cargar cada escenario de la lista (FONDO_OK = bien)
@@ -185,15 +193,15 @@ static volatile uint32_t ultimoRx;
 static volatile uint32_t teclaExpira[2][6];
 static volatile uint8_t  entradaReal;   /* ya llegó algo de un mando o la PC */
 
-/* ------------------------------------------------------------------------ */
+
 /* Ganchos (se pueden redefinir en main.c)                                   */
-/* ------------------------------------------------------------------------ */
+
 __weak void Game_Sonido(uint8_t id)         { (void) id; }
 __weak void Game_Resultado(uint8_t ganador) { (void) ganador; }
 
-/* ------------------------------------------------------------------------ */
+
 /* Entradas                                                                  */
-/* ------------------------------------------------------------------------ */
+
 
 /* Protocolo del ESP32 receptor: 0xFF, J1, J2 */
 void Game_RxByte(uint8_t b) {
@@ -243,9 +251,8 @@ static uint8_t LeerEntrada(uint8_t j) {
 	return m;
 }
 
-/* ------------------------------------------------------------------------ */
 /* Cajas y colisiones                                                        */
-/* ------------------------------------------------------------------------ */
+
 
 /* AABB de la clase, hay colisión si las cajas se traslapan en X y en Y.
  * Con >= y <=, tocarse por el borde también cuenta. */
@@ -299,6 +306,7 @@ static void Cambiar(Peleador *p, uint8_t estado) {
 	p->estado = estado;
 	p->t = 0;
 	p->conecto = 0;
+	p->empuje = 0;
 }
 
 static void ActualizarPeleador(Peleador *p, const Peleador *o) {
@@ -319,7 +327,9 @@ static void ActualizarPeleador(Peleador *p, const Peleador *o) {
 	case P_QUIETO:
 	case P_CAMINA:
 		p->dir = (o->x >= p->x) ? 1 : -1;      /* siempre mira al rival */
-		if (nuevo & BTN_A) {
+		if (in & BTN_ABAJO) {
+			Cambiar(p, P_CUBRE);       /* se cubre mientras mantenga ABAJO */
+		} else if (nuevo & BTN_A) {
 			Cambiar(p, P_GOLPE);
 		} else if (nuevo & BTN_B) {
 			Cambiar(p, P_PATADA);
@@ -350,7 +360,18 @@ static void ActualizarPeleador(Peleador *p, const Peleador *o) {
 		if (p->t <= 4) nx -= 3 * p->dir;       /* retroceso */
 		/* Si lo golpearon en el aire, sigue cayendo como salto: así no
 		 * puede volver a saltar ni atacar antes de tocar el piso. */
-		if (p->t >= 8) Cambiar(p, (p->y < suelo) ? P_SALTO : P_QUIETO);
+		if (p->t >= TICKS_DANO) Cambiar(p, (p->y < suelo) ? P_SALTO : P_QUIETO);
+		break;
+
+	case P_CUBRE:
+		/* No camina ni ataca. Si cubrió un golpe, retrocede un poco. */
+		p->dir = (o->x >= p->x) ? 1 : -1;
+		if (p->empuje > 0) {
+			nx -= VEL_EMPUJE * p->dir;
+			p->empuje--;
+		}
+		if (!(in & BTN_ABAJO))
+			Cambiar(p, P_QUIETO);              /* soltó ABAJO */
 		break;
 
 	default:   /* P_KO */
@@ -398,6 +419,11 @@ static uint8_t Conecta(const Peleador *a, const Peleador *v) {
  * aplicar el segundo golpe el atacante ya cambió de estado. */
 static void AplicarGolpe(Peleador *a, Peleador *v, uint8_t dano) {
 	a->conecto = 1;
+	if (v->estado == P_CUBRE) {
+		/* Golpe cubierto: no quita vida, solo lo empuja un poco hacia atrás */
+		v->empuje = TICKS_EMPUJE;
+		return;
+	}
 	v->vida -= dano;
 	if (v->vida <= 0) {
 		v->vida = 0;
@@ -421,7 +447,20 @@ static uint8_t EntradaDemo(const Peleador *yo, const Peleador *otro) {
 	/* Espacio libre entre los dos cuerpos (cada personaje tiene su ancho) */
 	int16_t hueco = (otro->x > yo->x) ? otro->x - (yo->x + yo->pj->cuerpoW)
 	                                  : yo->x - (otro->x + otro->pj->cuerpoW);
-	uint32_t r = Azar();
+	uint32_t r;
+
+	/* Cuando el rival empieza un ataque, decide si se cubre (la mitad de
+	 * las veces) y mantiene esa decisión mientras dure el ataque. */
+	static uint8_t cubrir[2];
+	const uint8_t yoNum = (uint8_t) (yo - pl);
+	if (Atacando(otro)) {
+		if (otro->t == 0)
+			cubrir[yoNum] = (Azar() % 2 == 0);
+		if (cubrir[yoNum] && hueco <= 30)
+			return BTN_ABAJO;
+	}
+
+	r = Azar();
 	if (hueco > 20)
 		return (r % 16 == 0) ? (hacia | BTN_ARRIBA) : hacia;
 	switch (r % 8) {
@@ -432,9 +471,9 @@ static uint8_t EntradaDemo(const Peleador *yo, const Peleador *otro) {
 	}
 }
 
-/* ------------------------------------------------------------------------ */
+
 /* Dibujado                                                                  */
-/* ------------------------------------------------------------------------ */
+
 /*
  * La pantalla se arma por capas, de atrás hacia adelante:
  *
@@ -634,6 +673,15 @@ static const Cuadro *CuadroActual(const Peleador *p) {
 		if (k == ultimo && ultimo > 0 && p->y < pisoY - pj->cuerpoH)
 			k = (uint8_t) (ultimo - 1);
 		return &pj->ko.cuadros[k];
+	} else if (p->estado == P_CUBRE && pj->cubre.n > 0) {
+		/* Cubriéndose: los cuadros se repiten mientras dure */
+		return &pj->cubre.cuadros[(ticksEstado / TICKS_CUADRO) % pj->cubre.n];
+	} else if (p->estado == P_DANO && pj->dano.n > 0) {
+		/* Recibiendo un golpe: los cuadros se reparten en los ticks que dura */
+		uint8_t k = (uint8_t) (p->t * pj->dano.n / TICKS_DANO);
+		if (k >= pj->dano.n)
+			k = (uint8_t) (pj->dano.n - 1);
+		return &pj->dano.cuadros[k];
 	} else if (p->estado == P_CAMINA) {
 		uint8_t k = (uint8_t) ((ticksEstado / TICKS_CUADRO) % pj->caminar.n);
 		/* Si camina alejándose del rival, la animación corre al revés */
@@ -641,8 +689,8 @@ static const Cuadro *CuadroActual(const Peleador *p) {
 			k = (uint8_t) (pj->caminar.n - 1 - k);
 		return &pj->caminar.cuadros[k];
 	}
-	/* Quieto, saltando, recibiendo un golpe, o atacando sin sprite de
-	 * ataque: la pose en guardia */
+	/* Quieto, saltando, o sin sprite para lo que está haciendo: la pose
+	 * en guardia */
 	return &pj->caminar.cuadros[0];
 }
 
@@ -675,7 +723,8 @@ static Capa CapaCuerpo(const Peleador *p) {
 	c.px = q->px;
 	c.paleta = p->pj->paleta;
 	c.voltear = (p->dir < 0);
-	c.silueta = (p->estado == P_DANO);  /* al recibir un golpe: todo blanco */
+	/* Al recibir un golpe, sin sprite de daño: la guardia toda en blanco */
+	c.silueta = (p->estado == P_DANO && p->pj->dano.n == 0);
 	c.color = C_BLANCO;
 
 	if (p->estado == P_KO) {
@@ -894,8 +943,8 @@ static void TickMenu(void) {
 
 	if (PresionaronA())
 		EntrarPelea();
-	else if (!entradaReal && ticksEstado > 3 * TICKS_SEGUNDO)
-		EntrarPelea();    /* nadie ha conectado un mando: demostración */
+	//else if (!entradaReal && ticksEstado > 3 * TICKS_SEGUNDO)
+		//EntrarPelea();    /* nadie ha conectado un mando: demostración */
 }
 
 static void TickPelea(void) {
