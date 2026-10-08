@@ -6,20 +6,20 @@
  * del personaje y el índice 0 es transparente. Los píxeles van por filas, de
  * arriba hacia abajo y de izquierda a derecha.
  *
- * Los cuadros no miden todos lo mismo (el de la patada es mucho más ancho
- * que el de la guardia), así que cada uno dice cómo se coloca respecto al
+ * Los cuadros no miden todos lo mismo, el de la patada es mucho más ancho
+ * que el de la guardia, así que cada uno dice cómo se coloca respecto al
  * cuerpo del personaje:
  *
  *   - Los pies están en la última fila del cuadro: esa fila va en el piso.
  *   - "eje" es cuántas columnas del cuadro quedan DETRÁS del centro del
  *     cuerpo. Todos los personajes están dibujados mirando a la derecha;
  *     al voltearlos, esas columnas quedan del otro lado del centro.
- *	   Esquematico
+ *	   Esquemático:
  *        eje                     centro del cuerpo
- *     |<------>|                        |
- *     +--------+----------------+       v
- *     |  espalda    brazo ----> |   [ cuerpo ]----> zona que golpea
- *     +--------+----------------+
+ *     |<            >|                        |
+ *     +        +                 +       v
+ *     |  espalda    brazo      > |   [ cuerpo ] > zona que golpea
+ *     +        +                 +
  *
  * El cuerpo (cuerpoW x cuerpoH) es la caja que se usa para las colisiones.
  * Es más angosta que el dibujo: las manos y los pies sobresalen de ella.
@@ -74,6 +74,11 @@ typedef struct {
 	Animacion ko;             /* caída al perder: los cuadros se ven una vez,
 	                             en orden, y el último (tendido en el piso)
 	                             se queda. Si n = 0, se dibuja un rectángulo  */
+	Animacion cubre;          /* cubriéndose: los cuadros se repiten mientras
+	                             dura. Si n = 0, se ve la guardia             */
+	Animacion dano;           /* al recibir un golpe: los cuadros se ven una
+	                             vez, en orden. Si n = 0, se ve la guardia
+	                             toda en blanco                              */
 	Animacion ataque[2];      /* [0] golpe, [1] patada. Si n = 0, el ataque
 	                             se dibuja como un rectángulo                */
 	ZonaGolpe zona[2];        /* [0] golpe, [1] patada                       */
