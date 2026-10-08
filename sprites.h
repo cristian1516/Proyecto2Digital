@@ -14,7 +14,7 @@
  *   - "eje" es cuántas columnas del cuadro quedan DETRÁS del centro del
  *     cuerpo. Todos los personajes están dibujados mirando a la derecha;
  *     al voltearlos, esas columnas quedan del otro lado del centro.
- *
+ *	   Esquematico
  *        eje                     centro del cuerpo
  *     |<------>|                        |
  *     +--------+----------------+       v
@@ -23,9 +23,11 @@
  *
  * El cuerpo (cuerpoW x cuerpoH) es la caja que se usa para las colisiones.
  * Es más angosta que el dibujo: las manos y los pies sobresalen de ella.
+ * Ryu y Dee Jay tienen la misma caja y la misma estatura (Dee Jay está
+ * achicado a la altura de Ryu).
  *
  * Los cuadros de KO se colocan distinto: el borde de adelante del cuadro va
- * en el frente del cuerpo y todo lo demás queda detrás, porque el peleador
+ * en el frente del cuerpo y lo demás queda detrás, porque el peleador
  * cae hacia atrás desde donde estaba parado.
  */
 #ifndef INC_SPRITES_H_
@@ -51,9 +53,10 @@ typedef struct {
 } Animacion;
 
 /* Zona que hace daño mientras el ataque está activo: un rectángulo delante
- * del personaje. Sale del cuadro activo del ataque: es lo que sobresale de
- * la pose en guardia. Para que un ataque llegue más o menos lejos basta con
- * cambiar aquí su ancho (w). */
+ * del personaje. Ryu y Dee Jay usan la misma: el promedio de lo que da el
+ * sprite de cada uno (lo que el brazo o la pierna sobresalen de la guardia),
+ * así los dos pegan con el mismo alcance. Para que un ataque llegue más o
+ * menos lejos basta con cambiar su ancho (w) en la tabla del personaje. */
 typedef struct {
 	uint8_t  dx;          /* del centro del cuerpo a donde empieza, hacia adelante */
 	uint8_t  dy;          /* de la parte de arriba del cuerpo hacia abajo          */
