@@ -58,6 +58,8 @@
 #define ALTO           240
 #define TICK_MS        33        /* ~30 cuadros por segundo                  */
 #define TICKS_SEGUNDO  30
+#define MAX_PASOS      4         /* ticks de lógica que se pueden recuperar si
+                                    dibujar se atrasó (ver TickPelea)         */
 
 #define PISO_NORMAL    200       /* y de los pies si el escenario no la trae */
 #define X_INICIAL      20        /* al empezar, cuánto se separa cada peleador
@@ -71,8 +73,10 @@
 #define TICKS_EMPUJE   4         /* ticks que retrocede al cubrir un golpe   */
 #define VEL_EMPUJE     2         /* px por tick de ese retroceso             */
 #define VEL_X          4         /* px por tick al caminar                   */
-#define VEL_SALTO      (-14)     /* velocidad inicial del salto (px/tick)    */
-#define GRAVEDAD       2         /* px/tick^2                                */
+#define VEL_SALTO      (-20)     /* velocidad inicial del salto (px/tick)    */
+#define GRAVEDAD       4         /* px/tick^2. Con -20 y 4: sube 60 px y dura
+                                    10 ticks (0.33 s). Antes -14 y 2: 56 px en
+                                    14 ticks, se sentía lento                 */
 #define VIDA_MAX       100
 #define TIEMPO_RONDA   60        /* segundos                                 */
 
@@ -1366,6 +1370,7 @@ static void EntrarPelea(void) {
 	DibujarTiempo();
 	DibujarPelea();
 	Game_Sonido(SND_PELEA);
+	ultimoTick = HAL_GetTick();     /* dibujar todo tardó: empezar de cero */
 }
 
 static void TickElegirEsc(void) {
@@ -1403,13 +1408,15 @@ static void EntrarGanador(void) {
 		Game_Resultado(ganador);
 }
 
-static void TickPelea(void) {
+/* Un paso de la lógica de la pelea (entradas, movimiento, golpes, reloj).
+ * Devuelve 0 si la pelea terminó o se salió de ella. */
+static uint8_t LogicaPelea(void) {
 	uint8_t i;
 
 	/* Si alguien conecta un mando durante la demostración, volver al menú */
 	if (demo && entradaReal) {
 		EntrarTitulo();
-		return;
+		return 0;
 	}
 
 	/* 1. Entradas */
@@ -1446,9 +1453,22 @@ static void TickPelea(void) {
 		}
 	} else if (++ticksFin > 2 * TICKS_SEGUNDO) {
 		EntrarGanador();
-		return;
+		return 0;
 	}
+	return 1;
+}
 
+/* "pasos" = cuántos ticks de 33 ms pasaron desde la última vez. Si dibujar
+ * tardó más de un tick (por ejemplo dos peleadores saltando a la vez), la
+ * lógica corre los pasos atrasados y se dibuja una sola vez: así el juego
+ * va siempre a la misma velocidad y nada se ve en cámara lenta. */
+static void TickPelea(uint8_t pasos) {
+	for (uint8_t k = 0; k < pasos; k++) {
+		if (k > 0)
+			ticksEstado++;            /* el primero ya lo contó Game_Update */
+		if (!LogicaPelea())
+			return;
+	}
 	/* 5. Pantalla */
 	DibujarPelea();
 }
@@ -1472,9 +1492,18 @@ void Game_Init(void) {
 
 void Game_Update(void) {
 	uint32_t ahora = HAL_GetTick();
+	uint32_t pasos;
 	if (ahora - ultimoTick < TICK_MS)
 		return;             /* todavía no toca*/
-	ultimoTick = ahora;
+	/* Ticks completos que pasaron. Si fueron muchos (cargar de la SD, dibujar
+	 * una pantalla completa) no se intenta alcanzarlos: máximo 4. */
+	pasos = (ahora - ultimoTick) / TICK_MS;
+	if (pasos > MAX_PASOS) {
+		pasos = MAX_PASOS;
+		ultimoTick = ahora;
+	} else {
+		ultimoTick += pasos * TICK_MS;
+	}
 	ticksEstado++;
 
 	switch (estadoJuego) {
@@ -1482,7 +1511,7 @@ void Game_Update(void) {
 	case EST_ELEGIR_PJ:  TickElegirPj();  break;
 	case EST_ELEGIR_ESC: TickElegirEsc(); break;
 	case EST_AVISO:      TickAviso();     break;
-	case EST_PELEA:      TickPelea();     break;
+	case EST_PELEA:      TickPelea((uint8_t) pasos); break;
 	case EST_GANADOR:    TickGanador();   break;
 	}
 }
