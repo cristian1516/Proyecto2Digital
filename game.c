@@ -1,8 +1,5 @@
 /*
  * game.c
- *
- * Copiar en Core/Src.
- *
  * Estructura:
  *   - Game_Update() corre un tick fijo de 33 ms sin bloquear (no usa HAL_Delay).
  *   - Máquina de estados del juego: MENU -> PELEA -> GANADOR -> MENU.
@@ -992,23 +989,13 @@ static uint8_t ArchivoDe(uint8_t j) {
 	return opArch[eleccion[j]];
 }
 
-/* Paleta del jugador j: la de la opción elegida. Si los dos eligieron
- * exactamente la misma (p. ej. RYU y RYU), el jugador 2 usa la siguiente
- * versión de color del archivo, si la hay, para que no sean idénticos. */
+/* Paleta (versión de color) de la opción que eligió el jugador j. Los dos
+ * jugadores pueden elegir la misma opción. */
 static uint8_t PaletaDe(uint8_t j) {
-	uint8_t pal = opPal[eleccion[j]];
-	const uint8_t np = nPalArch[ArchivoDe(j)];
-	if (j == 1 && eleccion[0] == eleccion[1] && np > 1)
-		pal = (uint8_t) ((pal + 1) % np);
-	return pal;
+	return opPal[eleccion[j]];
 }
 
-/* Nombre de lo que va a usar el jugador j (con el cambio de color de arriba) */
 static const char *NombreDe(uint8_t j) {
-	for (uint8_t i = 0; i < nOp; i++) {
-		if (opArch[i] == ArchivoDe(j) && opPal[i] == PaletaDe(j))
-			return nomOp[i];
-	}
 	return nomOp[eleccion[j]];
 }
 
@@ -1266,15 +1253,11 @@ static void TickElegirPj(void) {
 			continue;
 		}
 		if ((n & (BTN_IZQ | BTN_DER)) && nOp > 1) {
-			const uint8_t paletaJ2Antes = PaletaDe(1);
 			if (n & BTN_IZQ)
 				eleccion[j] = (uint8_t) ((eleccion[j] + nOp - 1) % nOp);
 			else
 				eleccion[j] = (uint8_t) ((eleccion[j] + 1) % nOp);
 			DibujarPanel(j);
-			/* Si J1 llegó o salió de la misma opción que J2, cambia el color de J2 */
-			if (j == 0 && PaletaDe(1) != paletaJ2Antes)
-				DibujarPanel(1);
 		}
 	}
 	/* Los dos listos: una pausa corta para que se vea y a elegir escenario */
