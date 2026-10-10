@@ -13,6 +13,10 @@
  * Controles: flechas para caminar y saltar, A golpe, B patada, y mantener
  * ABAJO para cubrirse (un golpe cubierto no quita vida).
  *
+ * Menús: TITULO -> ELEGIR PERSONAJES -> ELEGIR ESCENARIO -> PELEA. En los
+ * menús, IZQ/DER cambian, A elige y B regresa. Cada jugador elige su
+ * personaje con su propio control.
+ *
  * Los peleadores se dibujan con sprites (sprites.c / sprites.h): 1 byte por
  * píxel con paleta, y el índice 0 es transparente. Cada jugador tiene su
  * personaje (tabla PERSONAJE). Un personaje tiene dos cajas distintas:
@@ -25,22 +29,30 @@
  * La pantalla se arma por capas (escenario, un peleador, el otro), ver
  * Repintar(). Así el puño de uno puede pasar por encima del otro.
  *
- * El escenario está en la microSD (fondo.c / fondo.h). Se copia a la RAM
- * antes de cada pelea y de ahí se lee al repintar. Sin tarjeta el juego
- * funciona con fondo liso.
+ * Personajes (.SPR) y escenarios (.ESC) están en la microSD, comprimidos.
+ * Al terminar de elegir se copian a la RAM solo los elegidos (personajes.c,
+ * fondo.c, recursos.c) y durante la pelea ya no se toca la tarjeta. Si en
+ * la siguiente pelea se elige lo mismo, no se vuelve a leer nada.
+ *
+ * Cada jugador tiene un búfer donde se descomprime el cuadro que le toca
+ * dibujar; solo se descomprime cuando el cuadro cambia.
  */
 
 #include <stddef.h>
+#include <string.h>
 #include "game.h"
-#include "ili9341.h"   /* también incluye main.h (HAL) */
+#include "ili9341.h"     /* también incluye main.h (HAL) */
 #include "sprites.h"
-#include "fondo.h"     /* escenario: se carga de la microSD a la RAM */
+#include "recursos.h"    /* almacén de RAM y tarjeta SD */
+#include "personajes.h"  /* personajes: de la microSD a la RAM */
+#include "fondo.h"       /* escenario: de la microSD a la RAM */
 
-/* Escenarios: archivos en la raíz de la microSD. Se usan por turnos, uno
- * distinto en cada pelea; si alguno no está en la tarjeta se salta. Para
- * agregar otro basta con copiar su archivo a la SD y ponerlo en la lista. */
-static const char *const ESCENARIOS[] = { "Fondo.bin", "Honda.bin" };
-#define N_ESCENARIOS   (sizeof ESCENARIOS / sizeof ESCENARIOS[0])
+/* Cuántos archivos de cada tipo se muestran en el menú. Para agregar un
+ * personaje o un escenario basta con copiar su archivo a la raíz de la SD. */
+#define MAX_PJ         8     /* archivos .SPR                           */
+#define MAX_OP         12    /* opciones del menú: una por cada versión de
+                                color de cada personaje (RYU, RYU AZUL...) */
+#define MAX_ESC        8
 
 
 /* Configuración                                                             */
@@ -86,11 +98,14 @@ static const char *const ESCENARIOS[] = { "Fondo.bin", "Honda.bin" };
 #define C_GRIS         0x7BEF
 #define C_VIDA         0x07E0
 #define C_VIDA_FONDO   0x8000
+#define C_LISTO        0x07E0
 
 
 /* Tipos                                                                     */
 
-typedef enum { EST_MENU, EST_PELEA, EST_GANADOR } EstadoJuego;
+typedef enum {
+	EST_TITULO, EST_ELEGIR_PJ, EST_ELEGIR_ESC, EST_AVISO, EST_PELEA, EST_GANADOR
+} EstadoJuego;
 
 typedef enum {
 	P_QUIETO, P_CAMINA, P_SALTO, P_GOLPE, P_PATADA, P_DANO, P_KO,
@@ -134,7 +149,8 @@ static const Ataque ATAQUES[2] = {
  * rectángulo de un solo color. Cada peleador tiene dos. */
 typedef struct {
 	Caja caja;                /* zona de la pantalla que ocupa; w = 0: nada  */
-	const uint8_t  *px;       /* píxeles del cuadro; NULL = rectángulo liso  */
+	const Cuadro   *cuadro;   /* cuadro que se ve (para saber si cambió)     */
+	const uint8_t  *px;       /* píxeles ya descomprimidos; NULL = rectángulo liso */
 	const uint16_t *paleta;
 	uint16_t color;           /* color del rectángulo, o de la silueta       */
 	uint8_t  voltear;         /* 1 = espejo horizontal (mira a la izquierda) */
@@ -146,21 +162,39 @@ enum {
 	BRAZO       /* rectángulo del ataque, para personajes sin sprite de ataque */
 };
 
-/* Personaje de cada jugador. Para cambiarlo basta con cambiar esta tabla
- * (personajes disponibles: ryu, ryuAzul, deeJay). */
-static const Personaje *const PERSONAJE[2] = { &ryu, &deeJay };
+/* Archivos que hay en la SD y el nombre que se muestra de cada uno */
+static char    archPj[MAX_PJ][13];
+static uint8_t nPalArch[MAX_PJ];   /* versiones de color de cada archivo     */
+static char    archEsc[MAX_ESC][13], nomEsc[MAX_ESC][16];
+static uint8_t nPj, nEsc;
+
+/* Opciones del menú de personajes: archivo y paleta de cada una */
+static char    nomOp[MAX_OP][16];
+static uint8_t opArch[MAX_OP], opPal[MAX_OP];
+static uint8_t nOp;
+
+/* Lo elegido en el menú */
+static uint8_t eleccion[2];        /* opción de cada jugador (índice)      */
+static uint8_t listo[2];           /* el jugador ya confirmó su personaje  */
+static uint8_t escElegido;
+static uint8_t ticksListos;        /* los dos listos: pausa antes de seguir */
+
+/* Lo que está cargado en la RAM: archivo de cada jugador y escenario.
+ * 0xFF = nada. Si se elige lo mismo otra vez no se vuelve a leer la SD. */
+static uint8_t   cargado[3] = { 0xFF, 0xFF, 0xFF };
+static Personaje pjCargado[2];
+
+/* Búfer de cada jugador donde se descomprime el cuadro que se dibuja */
+static uint8_t      *bufCuadro[2];
+static const Cuadro *cuadroEnBuf[2];   /* cuál cuadro tiene ahora */
+
+/* Mensaje de la pantalla de aviso (errores al cargar) */
+static char avisoTxt[4][41];
 
 /* Variables                                                                 */
 
 static EstadoJuego estadoJuego;
 static Peleador    pl[2];
-/* Último resultado de cargar cada escenario de la lista (FONDO_OK = bien)
- * y el código de FatFs que lo acompañó. Se muestran en el menú. */
-static uint8_t     errorEsc[N_ESCENARIOS];
-static uint8_t     fatfsEsc[N_ESCENARIOS];
-static uint8_t     escenario;        /* índice del escenario que toca cargar */
-static uint8_t     escenarioRam = 0xFF;  /* índice del que está en la RAM    */
-static uint8_t     sinTarjeta;       /* la SD no respondió: no reintentar    */
 static int16_t     pisoY = PISO_NORMAL;  /* y donde se paran los peleadores  */
 static uint32_t    ultimoTick;
 static uint16_t    ticksEstado;      /* ticks desde que se entró al estado   */
@@ -169,10 +203,9 @@ static uint8_t     finRonda;         /* 1 = ya hay ganador, esperando        */
 static uint16_t    ticksFin;
 static uint8_t     ganador;          /* 1, 2 o 0 = empate                    */
 static uint8_t     prevMenu;         /* botones del tick anterior en menús   */
+static uint8_t     prevJ[2];         /* lo mismo, por jugador                */
 static uint8_t     demo;             /* 1 = pelea automática de demostración */
 static uint32_t    semilla = 12345;
-
-static void CargarEscenario(void);
 
 /* Lo que hay pintado en pantalla ahora mismo: las capas de cada peleador y
  * cuál de los dos va encima del otro. */
@@ -538,33 +571,61 @@ static void PintarCapa(const Capa *k, int16_t x0, int16_t w, int16_t y) {
 	}
 }
 
-/* Repinta una zona de la pantalla con todo lo que debe verse en ella. */
-static void Repintar(Caja c) {
+/* Repinta varias zonas de la pantalla con todo lo que debe verse en ellas.
+ * Se avanza fila por fila de la pantalla y en cada una se pintan los
+ * pedazos de todas las zonas que pasan por ahí: así cada fila del
+ * escenario se descomprime una sola vez aunque las zonas se encimen. */
+static void RepintarZonas(const Caja *zs, uint8_t n) {
 	const uint8_t abajo = (uint8_t) (1 - encima);
-	int16_t i, y;
+	Caja z[MAX_ZONAS];
+	uint8_t m = 0, k;
+	int16_t i, y, y0 = ALTO, y1 = 0;
 
-	c = Recortar(c);
-	if (c.w <= 0 || c.h <= 0)
+	for (k = 0; k < n && m < MAX_ZONAS; k++) {
+		Caja c = Recortar(zs[k]);
+		if (c.w <= 0 || c.h <= 0)
+			continue;
+		z[m++] = c;
+		if (c.y < y0) y0 = c.y;
+		if (c.y + c.h > y1) y1 = c.y + c.h;
+	}
+	if (m == 0)
 		return;
 
 	HAL_GPIO_WritePin(LCD_CS_GPIO_Port, LCD_CS_Pin, GPIO_PIN_RESET);
-	SetWindows(c.x, c.y, c.x + c.w - 1, c.y + c.h - 1);
-	for (y = c.y; y < c.y + c.h; y++) {
-		/* Capas, de atrás hacia adelante */
-		for (i = 0; i < c.w; i++)
-			fila[i] = Fondo_Color(c.x + i, y);
-		PintarCapa(&capa[abajo][CUERPO],  c.x, c.w, y);
-		PintarCapa(&capa[encima][CUERPO], c.x, c.w, y);
-		PintarCapa(&capa[0][BRAZO], c.x, c.w, y);
-		PintarCapa(&capa[1][BRAZO], c.x, c.w, y);
+	for (y = y0; y < y1; y++) {
+		const uint8_t *f = Fondo_Fila(y);      /* NULL: fila sin escenario */
+		const uint16_t vacio = Fondo_Vacio();
+		for (k = 0; k < m; k++) {
+			const Caja c = z[k];
+			if (y < c.y || y >= c.y + c.h)
+				continue;
+			/* Capas, de atrás hacia adelante */
+			if (f != NULL) {
+				for (i = 0; i < c.w; i++)
+					fila[i] = fondoPal[f[c.x + i]];
+			} else {
+				for (i = 0; i < c.w; i++)
+					fila[i] = vacio;
+			}
+			PintarCapa(&capa[abajo][CUERPO],  c.x, c.w, y);
+			PintarCapa(&capa[encima][CUERPO], c.x, c.w, y);
+			PintarCapa(&capa[0][BRAZO], c.x, c.w, y);
+			PintarCapa(&capa[1][BRAZO], c.x, c.w, y);
 
-		/* La fila ya tiene los colores finales: a la pantalla */
-		for (i = 0; i < c.w; i++) {
-			LCD_DATA((uint8_t) (fila[i] >> 8));
-			LCD_DATA((uint8_t) fila[i]);
+			/* La fila ya tiene los colores finales: a la pantalla */
+			SetWindows(c.x, y, c.x + c.w - 1, y);
+			for (i = 0; i < c.w; i++) {
+				LCD_DATA((uint8_t) (fila[i] >> 8));
+				LCD_DATA((uint8_t) fila[i]);
+			}
 		}
 	}
 	HAL_GPIO_WritePin(LCD_CS_GPIO_Port, LCD_CS_Pin, GPIO_PIN_SET);
+}
+
+static void Repintar(Caja c) {
+	RepintarZonas(&c, 1);
 }
 
 /* Caja más pequeña que contiene a las dos */
@@ -694,7 +755,7 @@ static const Cuadro *CuadroActual(const Peleador *p) {
 	return &pj->caminar.cuadros[0];
 }
 
-static const Capa CAPA_VACIA = { { 0, 0, 0, 0 }, NULL, NULL, 0, 0, 0 };
+static const Capa CAPA_VACIA = { { 0, 0, 0, 0 }, NULL, NULL, NULL, 0, 0, 0 };
 
 /* Capa del cuerpo: el cuadro de sprite que toca, colocado en la pantalla.
  * El cuadro se alinea con el cuerpo por los pies (su última fila va en el
@@ -711,6 +772,20 @@ static Capa CapaCuerpo(const Peleador *p) {
 	}
 
 	q = CuadroActual(p);
+
+	/* El cuadro está comprimido en la RAM: se descomprime en el búfer del
+	 * jugador, solo si ese búfer todavía no lo tiene. */
+	{
+		const uint8_t j = (uint8_t) (p - pl);
+		if (cuadroEnBuf[j] != q) {
+			if (!LZ_Descomprimir(q->datos, q->tam, bufCuadro[j], (uint32_t) q->w * q->h))
+				memset(bufCuadro[j], 0, (uint32_t) q->w * q->h);   /* dañado: no se ve */
+			cuadroEnBuf[j] = q;
+		}
+		c.px = bufCuadro[j];
+	}
+	c.cuadro = q;
+
 	centro = p->x + p->pj->cuerpoW / 2;
 	pies = p->y + p->pj->cuerpoH;
 
@@ -720,7 +795,6 @@ static Capa CapaCuerpo(const Peleador *p) {
 	/* Mirando a la derecha, "eje" columnas quedan a la izquierda del centro.
 	 * Volteado quedan a la derecha, y a la izquierda las w - eje restantes. */
 	c.caja.x = (p->dir > 0) ? centro - q->eje : centro - (q->w - q->eje);
-	c.px = q->px;
 	c.paleta = p->pj->paleta;
 	c.voltear = (p->dir < 0);
 	/* Al recibir un golpe, sin sprite de daño: la guardia toda en blanco */
@@ -751,7 +825,8 @@ static Capa CapaBrazo(const Peleador *p) {
 }
 
 static uint8_t MismaCapa(const Capa *a, const Capa *b) {
-	return Igual(a->caja, b->caja) && a->px == b->px && a->paleta == b->paleta
+	return Igual(a->caja, b->caja) && a->cuadro == b->cuadro && a->px == b->px
+	    && a->paleta == b->paleta
 	    && a->color == b->color && a->voltear == b->voltear
 	    && a->silueta == b->silueta;
 }
@@ -811,8 +886,7 @@ static void DibujarPelea(void) {
 	}
 
 	/* 3. Repintar esas zonas con las capas nuevas */
-	for (i = 0; i < nZonas; i++)
-		Repintar(zonas[i]);
+	RepintarZonas(zonas, nZonas);
 
 	/* 4. Marcador */
 	for (i = 0; i < 2; i++) {
@@ -823,8 +897,9 @@ static void DibujarPelea(void) {
 		DibujarTiempo();
 }
 
+
 /* ------------------------------------------------------------------------ */
-/* Estados del juego                                                         */
+/* Textos                                                                    */
 /* ------------------------------------------------------------------------ */
 /* Copia el texto s al final de d (como máximo n letras) y devuelve dónde
  * quedó el final, para seguir pegando. */
@@ -835,42 +910,437 @@ static char *Pegar(char *d, const char *s, uint8_t n) {
 	return d;
 }
 
-/* Dos renglones al pie del menú: qué escenario está cargado para la próxima
- * pelea y, si algún archivo de la lista no se pudo cargar, cuál y por qué.
- * El primer número es el error de fondo.h y el segundo el código de FatFs
- * (ERROR 2, FATFS 04 = el archivo no está en la tarjeta). */
-static void DibujarEstadoEscenarios(void) {
-	char txt[41];
-	char *t;
-
-	t = Pegar(txt, "ESCENARIO: ", 40);
-	Pegar(t, Fondo_Listo() ? ESCENARIOS[escenarioRam] : "NINGUNO", 12);
-	LCD_Print(txt, 8, 204, 1, C_GRIS, C_NEGRO);
-
-	for (uint8_t i = 0; i < N_ESCENARIOS; i++) {
-		if (errorEsc[i] == FONDO_OK)
-			continue;
-		t = Pegar(txt, "FALLO ", 40);
-		t = Pegar(t, ESCENARIOS[i], 12);
-		t = Pegar(t, ": ERROR 0, FATFS 00", 40);
-		t[-11] = (char) ('0' + errorEsc[i]);
-		t[-2]  = (char) ('0' + fatfsEsc[i] / 10 % 10);
-		t[-1]  = (char) ('0' + fatfsEsc[i] % 10);
-		LCD_Print(txt, 8, 220, 1, C_J1, C_NEGRO);
-		break;                          /* solo cabe uno: el primero */
-	}
+/* Pega un número sin signo en decimal */
+static char *PegarNum(char *d, uint32_t v) {
+	char t[10];
+	uint8_t n = 0;
+	do {
+		t[n++] = (char) ('0' + v % 10);
+		v /= 10;
+	} while (v);
+	while (n)
+		*d++ = t[--n];
+	*d = 0;
+	return d;
 }
 
-static void EntrarMenu(void) {
-	estadoJuego = EST_MENU;
+/* Texto centrado en la franja [x0, x0 + w) de la pantalla. tam: 1 = 8 px
+ * por letra, 2 = 16 px por letra. */
+static void TextoEn(const char *t, int16_t x0, int16_t w, int16_t y, uint8_t tam,
+		uint16_t color, uint16_t fondo) {
+	int16_t ancho = (int16_t) (strlen(t) * (tam == 1 ? 8 : 16));
+	int16_t x = (int16_t) (x0 + (w - ancho) / 2);
+	if (x < 0)
+		x = 0;
+	LCD_Print((char *) t, x, y, tam, color, fondo);
+}
+
+static void Centrado(const char *t, int16_t y, uint8_t tam, uint16_t color, uint16_t fondo) {
+	TextoEn(t, 0, ANCHO, y, tam, color, fondo);
+}
+
+/* ------------------------------------------------------------------------ */
+/* Archivos de la SD                                                         */
+/* ------------------------------------------------------------------------ */
+
+/* "RYU.SPR" -> "RYU": nombre para mostrar si el archivo no trae uno */
+static void SinExtension(char *d, const char *archivo) {
+	uint8_t i = 0;
+	while (archivo[i] && archivo[i] != '.' && i < 15) {
+		d[i] = archivo[i];
+		i++;
+	}
+	d[i] = 0;
+}
+
+/* Busca en la SD los personajes y escenarios y lee sus nombres */
+static void BuscarArchivos(void) {
+	nPj = SD_Listar(".SPR", archPj, MAX_PJ);
+	nOp = 0;
+	for (uint8_t i = 0; i < nPj; i++) {
+		/* Una opción por cada versión de color: RYU, RYU AZUL... */
+		char nombres[4][16];
+		uint8_t np = 0;
+		if (Personaje_Nombres(archPj[i], nombres, 4, &np) != REC_OK || np == 0) {
+			np = 1;
+			SinExtension(nombres[0], archPj[i]);
+		}
+		nPalArch[i] = np;
+		for (uint8_t k = 0; k < np && nOp < MAX_OP; k++) {
+			if (nombres[k][0] == 0)
+				SinExtension(nombres[k], archPj[i]);
+			memcpy(nomOp[nOp], nombres[k], 16);
+			opArch[nOp] = i;
+			opPal[nOp] = k;
+			nOp++;
+		}
+	}
+	nEsc = SD_Listar(".ESC", archEsc, MAX_ESC);
+	for (uint8_t i = 0; i < nEsc; i++) {
+		if (Fondo_Nombre(archEsc[i], nomEsc[i]) != REC_OK || nomEsc[i][0] == 0)
+			SinExtension(nomEsc[i], archEsc[i]);
+	}
+	/* La lista pudo cambiar: lo que había en la RAM ya no se reconoce */
+	cargado[0] = cargado[1] = cargado[2] = 0xFF;
+	eleccion[0] = 0;
+	eleccion[1] = (nOp > 1) ? 1 : 0;
+	escElegido = 0;
+}
+
+/* Archivo del personaje que eligió el jugador j */
+static uint8_t ArchivoDe(uint8_t j) {
+	return opArch[eleccion[j]];
+}
+
+/* Paleta del jugador j: la de la opción elegida. Si los dos eligieron
+ * exactamente la misma (p. ej. RYU y RYU), el jugador 2 usa la siguiente
+ * versión de color del archivo, si la hay, para que no sean idénticos. */
+static uint8_t PaletaDe(uint8_t j) {
+	uint8_t pal = opPal[eleccion[j]];
+	const uint8_t np = nPalArch[ArchivoDe(j)];
+	if (j == 1 && eleccion[0] == eleccion[1] && np > 1)
+		pal = (uint8_t) ((pal + 1) % np);
+	return pal;
+}
+
+/* Nombre de lo que va a usar el jugador j (con el cambio de color de arriba) */
+static const char *NombreDe(uint8_t j) {
+	for (uint8_t i = 0; i < nOp; i++) {
+		if (opArch[i] == ArchivoDe(j) && opPal[i] == PaletaDe(j))
+			return nomOp[i];
+	}
+	return nomOp[eleccion[j]];
+}
+
+/* Copia a la RAM lo elegido: escenario, personaje de J1 y de J2, y los
+ * búferes donde se descomprimen los cuadros. Si es lo mismo que ya está
+ * cargado no lee nada. Si algo falla, deja el texto del error en avisoTxt. */
+static uint8_t CargarPelea(void) {
+	const uint8_t esc = (nEsc > 0) ? escElegido : 0xFE;   /* 0xFE = fondo liso */
+	const char *falla = "";
+	uint8_t r = REC_OK;
+	char *t;
+
+	const uint8_t a0 = ArchivoDe(0), a1 = ArchivoDe(1);
+
+	if (cargado[0] == a0 && cargado[1] == a1 && cargado[2] == esc) {
+		/* Ya está en la RAM: solo poner los colores elegidos */
+		Personaje_Paleta(&pjCargado[0], PaletaDe(0));
+		Personaje_Paleta(&pjCargado[1], PaletaDe(1));
+		return REC_OK;
+	}
+
+	LCD_Clear(C_NEGRO);
+	Centrado("CARGANDO...", 100, 2, C_BLANCO, C_NEGRO);
+
+	Ram_Liberar();
+	Fondo_Quitar();
+	cargado[0] = cargado[1] = cargado[2] = 0xFF;
+
+	/* 1. Escenario */
+	if (esc != 0xFE) {
+		r = Fondo_Cargar(archEsc[esc]);
+		falla = archEsc[esc];
+	}
+	/* 2. Personaje del jugador 1 */
+	if (r == REC_OK) {
+		r = Personaje_Cargar(archPj[a0], &pjCargado[0], PaletaDe(0));
+		falla = archPj[a0];
+	}
+	/* 3. Personaje del jugador 2: si es el mismo, comparte los cuadros (no
+	 *    se carga dos veces) y solo cambia la paleta */
+	if (r == REC_OK) {
+		if (a1 == a0) {
+			pjCargado[1] = pjCargado[0];
+			Personaje_Paleta(&pjCargado[1], PaletaDe(1));
+		} else {
+			r = Personaje_Cargar(archPj[a1], &pjCargado[1], PaletaDe(1));
+			falla = archPj[a1];
+		}
+	}
+	/* 4. Un búfer por jugador, del tamaño del cuadro más grande */
+	for (uint8_t i = 0; i < 2 && r == REC_OK; i++) {
+		bufCuadro[i] = Ram_Pedir(pjCargado[i].maxCuadro);
+		cuadroEnBuf[i] = NULL;
+		if (bufCuadro[i] == NULL) {
+			r = REC_ERR_RAM;
+			falla = archPj[ArchivoDe(i)];
+		}
+	}
+
+	if (r != REC_OK) {
+		Ram_Liberar();
+		Fondo_Quitar();
+		Pegar(avisoTxt[0], "NO SE PUDO CARGAR", 40);
+		Pegar(avisoTxt[1], falla, 40);
+		switch (r) {
+		case REC_ERR_SD:      t = Pegar(avisoTxt[2], "LA SD NO RESPONDE", 40); break;
+		case REC_ERR_ABRIR:   t = Pegar(avisoTxt[2], "NO SE ABRIO EL ARCHIVO", 40); break;
+		case REC_ERR_DATOS:   t = Pegar(avisoTxt[2], SD_CodigoFatFs() ? "ERROR AL LEER LA SD"
+		                                                          : "ARCHIVO INCOMPLETO", 40); break;
+		case REC_ERR_FORMATO: t = Pegar(avisoTxt[2], "EL ARCHIVO NO SIRVE", 40); break;
+		default:              t = Pegar(avisoTxt[2], "NO CABE EN LA RAM", 40); break;
+		}
+		if (r == REC_ERR_RAM) {
+			t = Pegar(avisoTxt[3], "HAY ", 40);
+			t = PegarNum(t, RAM_ALMACEN / 1024);
+			Pegar(t, " KB: ELIGE OTRA COMBINACION", 40);
+		} else {
+			t = Pegar(avisoTxt[3], "CODIGO FATFS ", 40);
+			PegarNum(t, SD_CodigoFatFs());
+		}
+		return r;
+	}
+
+	cargado[0] = a0;
+	cargado[1] = a1;
+	cargado[2] = esc;
+
+	/* Cuánta RAM quedó ocupada, para saber qué tan cerca está el límite */
+	t = Pegar(avisoTxt[0], "RAM: ", 40);
+	t = PegarNum(t, (Ram_Usada() + 1023) / 1024);
+	t = Pegar(t, " DE ", 40);
+	t = PegarNum(t, RAM_ALMACEN / 1024);
+	Pegar(t, " KB", 40);
+	Centrado(avisoTxt[0], 130, 1, C_GRIS, C_NEGRO);
+
+	/* Lo que sobró del almacén: bloques del escenario ya descomprimidos */
+	Fondo_UsarRamLibre();
+	HAL_Delay(600);
+	return REC_OK;
+}
+
+/* ------------------------------------------------------------------------ */
+/* Botones en los menús                                                      */
+/* ------------------------------------------------------------------------ */
+
+/* Botones que el jugador j acaba de presionar (flanco de subida) */
+static uint8_t Nuevos(uint8_t j) {
+	uint8_t in = LeerEntrada(j);
+	uint8_t nuevo = in & (uint8_t) ~prevJ[j];
+	prevJ[j] = in;
+	return nuevo;
+}
+
+/* Devuelve 1 si algún jugador acaba de presionar A */
+static uint8_t PresionaronB(void) {
+	uint8_t in = LeerEntrada(0) | LeerEntrada(1);
+	uint8_t nuevo = in & (uint8_t) ~prevMenu;
+	prevMenu = in;
+	return (nuevo & BTN_A) != 0;
+}
+
+/* ------------------------------------------------------------------------ */
+/* Estados del juego                                                         */
+/* ------------------------------------------------------------------------ */
+
+static void EntrarElegirPj(void);
+static void EntrarElegirEsc(void);
+
+/* Una línea al pie del título: qué hay en la SD */
+static void DibujarEstadoSD(void) {
+	char txt[41];
+	char *t;
+	FillRect(0, 196, ANCHO, 28, C_NEGRO);
+	if (nPj == 0) {
+		t = Pegar(txt, "NO HAY PERSONAJES EN LA SD (FATFS ", 40);
+		t = PegarNum(t, SD_CodigoFatFs());
+		Pegar(t, ")", 40);
+		Centrado(txt, 200, 1, C_J1, C_NEGRO);
+		Centrado("COPIA LOS .SPR Y .ESC A LA SD", 214, 1, C_GRIS, C_NEGRO);
+		return;
+	}
+	t = Pegar(txt, "SD: ", 40);
+	t = PegarNum(t, nOp);
+	t = Pegar(t, nOp == 1 ? " PERSONAJE, " : " PERSONAJES, ", 40);
+	t = PegarNum(t, nEsc);
+	Pegar(t, nEsc == 1 ? " ESCENARIO" : " ESCENARIOS", 40);
+	Centrado(txt, 204, 1, C_GRIS, C_NEGRO);
+}
+
+static void EntrarTitulo(void) {
+	estadoJuego = EST_TITULO;
 	ticksEstado = 0;
 	prevMenu = 0xFF;      /* evita que un botón ya presionado cuente */
 	LCD_Clear(C_NEGRO);
 	LCD_Print("STREET FIGHTER", 48, 70, 2, C_AMARILLO, C_NEGRO);
 	LCD_Print("J1 vs J2", 96, 100, 2, C_BLANCO, C_NEGRO);
-	DibujarEstadoEscenarios();
+	DibujarEstadoSD();
 	Game_Sonido(SND_MENU);
 }
+
+static void TickTitulo(void) {
+	/* Texto parpadeante */
+	if (ticksEstado % 30 == 1)
+		LCD_Print("PRESIONA A", 80, 160, 2, C_BLANCO, C_NEGRO);
+	else if (ticksEstado % 30 == 16)
+		LCD_Print("          ", 80, 160, 2, C_BLANCO, C_NEGRO);
+
+	if (PresionaronB()) {
+		if (nPj == 0) {                 /* quizá ya metieron la tarjeta */
+			BuscarArchivos();
+			DibujarEstadoSD();
+		}
+		if (nPj > 0)
+			EntrarElegirPj();
+	}
+}
+
+/* ---- Elegir personajes -------------------------------------------------- */
+
+#define PANEL_W   144
+#define PANEL_Y   32
+#define PIES_Y    150     /* fila donde van los pies del retrato */
+
+static int16_t PanelX(uint8_t j) {
+	return (j == 0) ? 8 : ANCHO - 8 - PANEL_W;
+}
+
+static void DibujarListo(uint8_t j) {
+	const int16_t x0 = PanelX(j);
+	FillRect(x0, 184, PANEL_W, 18, C_NEGRO);
+	if (listo[j])
+		TextoEn("LISTO", x0, PANEL_W, 184, 2, C_LISTO, C_NEGRO);
+	else
+		TextoEn("A: ELEGIR", x0, PANEL_W, 188, 1, C_GRIS, C_NEGRO);
+}
+
+/* Recuadro de un jugador: retrato (pose en guardia), flechas y nombre */
+static void DibujarPanel(uint8_t j) {
+	const int16_t x0 = PanelX(j);
+	const char *nombre = NombreDe(j);
+
+	FillRect(x0, PANEL_Y, PANEL_W, 184 - PANEL_Y, C_NEGRO);
+	TextoEn(j ? "J2" : "J1", x0, PANEL_W, PANEL_Y, 2, j ? C_J2 : C_J1, C_NEGRO);
+	/* El retrato se lee directo de la SD: no toca lo que hay en la RAM */
+	if (Personaje_Vista(archPj[ArchivoDe(j)], PaletaDe(j), x0 + PANEL_W / 2,
+			PIES_Y, j == 1, C_NEGRO) != REC_OK)
+		TextoEn("SIN IMAGEN", x0, PANEL_W, 96, 1, C_J1, C_NEGRO);
+	if (nOp > 1) {
+		LCD_Print("<", x0, 92, 2, C_BLANCO, C_NEGRO);
+		LCD_Print(">", x0 + PANEL_W - 16, 92, 2, C_BLANCO, C_NEGRO);
+	}
+	if (strlen(nombre) * 16 <= PANEL_W)
+		TextoEn(nombre, x0, PANEL_W, 160, 2, C_BLANCO, C_NEGRO);
+	else
+		TextoEn(nombre, x0, PANEL_W, 164, 1, C_BLANCO, C_NEGRO);
+	DibujarListo(j);
+}
+
+static void EntrarElegirPj(void) {
+	estadoJuego = EST_ELEGIR_PJ;
+	ticksEstado = 0;
+	listo[0] = listo[1] = 0;
+	ticksListos = 0;
+	prevJ[0] = prevJ[1] = 0xFF;
+	for (uint8_t j = 0; j < 2; j++) {
+		if (eleccion[j] >= nOp)
+			eleccion[j] = 0;
+	}
+	LCD_Clear(C_NEGRO);
+	Centrado("ELIGE TU PELEADOR", 6, 2, C_AMARILLO, C_NEGRO);
+	Centrado("< >: CAMBIAR   A: ELEGIR   B: REGRESAR", 222, 1, C_GRIS, C_NEGRO);
+	DibujarPanel(0);
+	DibujarPanel(1);
+}
+
+static void TickElegirPj(void) {
+	for (uint8_t j = 0; j < 2; j++) {
+		uint8_t n = Nuevos(j);
+		if (n == 0)
+			continue;
+		if (listo[j]) {
+			if (n & BTN_B) {                /* se arrepintió */
+				listo[j] = 0;
+				DibujarListo(j);
+			}
+			continue;
+		}
+		if (n & BTN_B) {
+			EntrarTitulo();
+			return;
+		}
+		if (n & BTN_A) {
+			listo[j] = 1;
+			DibujarListo(j);
+			continue;
+		}
+		if ((n & (BTN_IZQ | BTN_DER)) && nOp > 1) {
+			const uint8_t paletaJ2Antes = PaletaDe(1);
+			if (n & BTN_IZQ)
+				eleccion[j] = (uint8_t) ((eleccion[j] + nOp - 1) % nOp);
+			else
+				eleccion[j] = (uint8_t) ((eleccion[j] + 1) % nOp);
+			DibujarPanel(j);
+			/* Si J1 llegó o salió de la misma opción que J2, cambia el color de J2 */
+			if (j == 0 && PaletaDe(1) != paletaJ2Antes)
+				DibujarPanel(1);
+		}
+	}
+	/* Los dos listos: una pausa corta para que se vea y a elegir escenario */
+	if (listo[0] && listo[1]) {
+		if (++ticksListos > TICKS_SEGUNDO / 2)
+			EntrarElegirEsc();
+	} else {
+		ticksListos = 0;
+	}
+}
+
+/* ---- Elegir escenario --------------------------------------------------- */
+
+static void DibujarEscenario(void) {
+	char txt[24];
+	char *t;
+	if (nEsc == 0) {
+		LCD_Clear(FONDO_SIN_SD);
+		Centrado("NO HAY ESCENARIOS EN LA SD", 110, 1, C_NEGRO, FONDO_SIN_SD);
+	} else if (Fondo_Vista(archEsc[escElegido]) != REC_OK) {
+		LCD_Clear(C_NEGRO);
+		Centrado("NO SE PUDO LEER", 100, 2, C_J1, C_NEGRO);
+		Centrado(archEsc[escElegido], 124, 1, C_BLANCO, C_NEGRO);
+	}
+	/* Vista previa del escenario, con el nombre encima */
+	Centrado("ELIGE ESCENARIO", 4, 2, C_AMARILLO, C_NEGRO);
+	FillRect(0, 202, ANCHO, ALTO - 202, C_NEGRO);
+	t = txt;
+	if (nEsc > 1)
+		t = Pegar(t, "< ", 4);
+	t = Pegar(t, nEsc ? nomEsc[escElegido] : "FONDO LISO", 15);
+	if (nEsc > 1)
+		Pegar(t, " >", 4);
+	Centrado(txt, 204, (strlen(txt) * 16 <= ANCHO) ? 2 : 1, C_BLANCO, C_NEGRO);
+	Centrado("A: PELEAR   B: REGRESAR", 226, 1, C_GRIS, C_NEGRO);
+}
+
+static void EntrarElegirEsc(void) {
+	estadoJuego = EST_ELEGIR_ESC;
+	ticksEstado = 0;
+	prevJ[0] = prevJ[1] = 0xFF;
+	if (escElegido >= nEsc)
+		escElegido = 0;
+	DibujarEscenario();
+}
+
+/* ---- Aviso de error al cargar --------------------------------------------- */
+
+static void EntrarAviso(void) {
+	estadoJuego = EST_AVISO;
+	ticksEstado = 0;
+	prevJ[0] = prevJ[1] = 0xFF;
+	LCD_Clear(C_NEGRO);
+	Centrado(avisoTxt[0], 60, 2, C_J1, C_NEGRO);
+	Centrado(avisoTxt[1], 96, 1, C_BLANCO, C_NEGRO);
+	Centrado(avisoTxt[2], 116, 1, C_BLANCO, C_NEGRO);
+	Centrado(avisoTxt[3], 132, 1, C_GRIS, C_NEGRO);
+	Centrado("A: REGRESAR", 180, 2, C_BLANCO, C_NEGRO);
+}
+
+static void TickAviso(void) {
+	if ((Nuevos(0) | Nuevos(1)) & (BTN_A | BTN_B))
+		EntrarElegirPj();
+}
+
+/* ---- Pelea ---------------------------------------------------------------- */
 
 static void EntrarPelea(void) {
 	estadoJuego = EST_PELEA;
@@ -881,9 +1351,13 @@ static void EntrarPelea(void) {
 	demo = !entradaReal;
 	semilla += HAL_GetTick();
 
+	/* Línea del piso: la del escenario si la trae y es razonable */
+	pisoY = (Fondo_Listo() && fondoPiso >= 180 && fondoPiso <= ALTO)
+	        ? (int16_t) fondoPiso : PISO_NORMAL;
+
 	for (uint8_t i = 0; i < 2; i++) {
 		Peleador *p = &pl[i];
-		p->pj = PERSONAJE[i];
+		p->pj = &pjCargado[i];
 		p->x = (i == 0) ? p->pj->margen + X_INICIAL
 		                : ANCHO - p->pj->margen - X_INICIAL - p->pj->cuerpoW;
 		p->y = pisoY - p->pj->cuerpoH;
@@ -896,6 +1370,7 @@ static void EntrarPelea(void) {
 		/* Todavía no hay nada suyo pintado */
 		capa[i][CUERPO] = CAPA_VACIA;
 		capa[i][BRAZO]  = CAPA_VACIA;
+		cuadroEnBuf[i] = NULL;
 	}
 	encima = 0;
 
@@ -908,6 +1383,25 @@ static void EntrarPelea(void) {
 	DibujarTiempo();
 	DibujarPelea();
 	Game_Sonido(SND_PELEA);
+}
+
+static void TickElegirEsc(void) {
+	uint8_t n = Nuevos(0) | Nuevos(1);
+	if (n & BTN_B) {
+		EntrarElegirPj();
+	} else if (n & BTN_A) {
+		if (CargarPelea() == REC_OK)
+			EntrarPelea();
+		else
+			EntrarAviso();
+	} else if ((n & (BTN_IZQ | BTN_DER)) && nEsc > 1) {
+		if (n & BTN_IZQ)
+			escElegido = (uint8_t) ((escElegido + nEsc - 1) % nEsc);
+		else
+			escElegido = (uint8_t) ((escElegido + 1) % nEsc);
+		DibujarEscenario();
+		prevJ[0] = prevJ[1] = 0xFF;     /* lo presionado mientras dibujaba no cuenta */
+	}
 }
 
 static void EntrarGanador(void) {
@@ -926,33 +1420,12 @@ static void EntrarGanador(void) {
 		Game_Resultado(ganador);
 }
 
-/* Devuelve 1 si algún jugador acaba de presionar A */
-static uint8_t PresionaronA(void) {
-	uint8_t in = LeerEntrada(0) | LeerEntrada(1);
-	uint8_t nuevo = in & (uint8_t) ~prevMenu;
-	prevMenu = in;
-	return (nuevo & BTN_A) != 0;
-}
-
-static void TickMenu(void) {
-	/* Texto parpadeante */
-	if (ticksEstado % 30 == 1)
-		LCD_Print("PRESIONA A", 80, 160, 2, C_BLANCO, C_NEGRO);
-	else if (ticksEstado % 30 == 16)
-		LCD_Print("          ", 80, 160, 2, C_BLANCO, C_NEGRO);
-
-	if (PresionaronA())
-		EntrarPelea();
-	//else if (!entradaReal && ticksEstado > 3 * TICKS_SEGUNDO)
-		//EntrarPelea();    /* nadie ha conectado un mando: demostración */
-}
-
 static void TickPelea(void) {
 	uint8_t i;
 
 	/* Si alguien conecta un mando durante la demostración, volver al menú */
 	if (demo && entradaReal) {
-		EntrarMenu();
+		EntrarTitulo();
 		return;
 	}
 
@@ -998,53 +1471,20 @@ static void TickPelea(void) {
 }
 
 static void TickGanador(void) {
-	if (PresionaronA() || (demo && ticksEstado > 3 * TICKS_SEGUNDO)) {
-		CargarEscenario();    /* el de la próxima pelea */
-		EntrarMenu();
-	}
+	/* Revancha: de vuelta a elegir, con la elección anterior ya puesta. Si
+	 * no cambian nada, la siguiente pelea no vuelve a leer la SD. */
+	if (PresionaronB() || (demo && ticksEstado > 3 * TICKS_SEGUNDO))
+		EntrarElegirPj();
 }
 
 /* ------------------------------------------------------------------------ */
 /* Funciones públicas                                                        */
 /* ------------------------------------------------------------------------ */
-/* Deja en la RAM el escenario que toca y pasa el turno al siguiente. Leer
- * la tarjeta tarda, por eso se hace entre peleas y no durante una. */
-static void CargarEscenario(void) {
-	if (sinTarjeta)
-		return;
-	for (uint8_t k = 0; k < N_ESCENARIOS; k++) {
-		uint8_t i = (uint8_t) ((escenario + k) % N_ESCENARIOS);
-		uint8_t error = FONDO_OK;
-		if (i != escenarioRam || !Fondo_Listo()) {  /* si no, ya está cargado */
-			error = Fondo_Cargar(ESCENARIOS[i]);
-			fatfsEsc[i] = Fondo_CodigoFatFs();
-		}
-		errorEsc[i] = error;
-
-		if (error == FONDO_OK) {
-			escenarioRam = i;
-			escenario = (uint8_t) ((i + 1) % N_ESCENARIOS);
-			/* Línea del piso: la del archivo si la trae y es razonable */
-			pisoY = (fondoPiso >= 180 && fondoPiso <= ALTO) ? (int16_t) fondoPiso
-			                                                : PISO_NORMAL;
-			return;
-		}
-		if (error == FONDO_ERR_SD) {                /* no hay tarjeta */
-			sinTarjeta = 1;
-			break;
-		}
-	}
-	pisoY = PISO_NORMAL;                            /* fondo liso */
-}
 
 void Game_Init(void) {
-	/* Si main.c acaba de guardar "Fondo.bin" ya quedó en la RAM y no se
-	 * vuelve a leer. */
-	if (Fondo_Listo())
-		escenarioRam = 0;
-	CargarEscenario();
+	BuscarArchivos();
 	ultimoTick = HAL_GetTick();
-	EntrarMenu();
+	EntrarTitulo();
 }
 
 void Game_Update(void) {
@@ -1055,8 +1495,11 @@ void Game_Update(void) {
 	ticksEstado++;
 
 	switch (estadoJuego) {
-	case EST_MENU:    TickMenu();    break;
-	case EST_PELEA:   TickPelea();   break;
-	case EST_GANADOR: TickGanador(); break;
+	case EST_TITULO:     TickTitulo();    break;
+	case EST_ELEGIR_PJ:  TickElegirPj();  break;
+	case EST_ELEGIR_ESC: TickElegirEsc(); break;
+	case EST_AVISO:      TickAviso();     break;
+	case EST_PELEA:      TickPelea();     break;
+	case EST_GANADOR:    TickGanador();   break;
 	}
 }
