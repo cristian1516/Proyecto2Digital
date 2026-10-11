@@ -1,5 +1,8 @@
 /*
  * game.c
+ *
+ * Copiar en Core/Src.
+ *
  * Estructura:
  *   - Game_Update() corre un tick fijo de 33 ms sin bloquear (no usa HAL_Delay).
  *   - Máquina de estados del juego: MENU -> PELEA -> GANADOR -> MENU.
@@ -744,6 +747,15 @@ static const Cuadro *CuadroActual(const Peleador *p) {
 		if (k >= pj->dano.n)
 			k = (uint8_t) (pj->dano.n - 1);
 		return &pj->dano.cuadros[k];
+	} else if (p->estado == P_SALTO && pj->salto.n > 0) {
+		/* En el aire: el cuadro depende de la velocidad vertical, que va de
+		 * VEL_SALTO (despegue) a -VEL_SALTO (aterrizaje) */
+		int16_t k = (int16_t) ((p->vy - VEL_SALTO) * pj->salto.n / (1 - 2 * VEL_SALTO));
+		if (k < 0)
+			k = 0;
+		if (k >= pj->salto.n)
+			k = pj->salto.n - 1;
+		return &pj->salto.cuadros[k];
 	} else if (p->estado == P_CAMINA) {
 		uint8_t k = (uint8_t) ((ticksEstado / TICKS_CUADRO) % pj->caminar.n);
 		/* Si camina alejándose del rival, la animación corre al revés */
@@ -1360,6 +1372,7 @@ static void EntrarPelea(void) {
 		cuadroEnBuf[i] = NULL;
 	}
 	encima = 0;
+	Fondo_Reiniciar();      /* los menús usaron la memoria del bloque */
 
 	/* Escenario completo: como no hay capas, Repintar solo pinta el fondo.
 	 * Los peleadores aparecen en DibujarPelea, al ver que no están pintados. */
