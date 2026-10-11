@@ -1,10 +1,16 @@
 /*
  * sprites.h - Personajes del juego.
  *
+ * Los personajes ya no están en la flash: cada uno es un archivo .SPR en la
+ * microSD (lo genera herramientas/convertir.py a partir de sprites.c) y se
+ * copia a la RAM solo si se elige en el menú (personajes.c).
+ *
  * Cada personaje tiene una lista de cuadros por animación. Un cuadro es una
  * imagen de w x h con 1 byte por píxel: cada byte es un índice a la paleta
  * del personaje y el índice 0 es transparente. Los píxeles van por filas, de
- * arriba hacia abajo y de izquierda a derecha.
+ * arriba hacia abajo y de izquierda a derecha. En la RAM cada cuadro está
+ * comprimido; game.c descomprime el que toca dibujar en un búfer de cada
+ * jugador (solo cuando el cuadro cambia).
  *
  * Los cuadros no miden todos lo mismo, el de la patada es mucho más ancho
  * que el de la guardia, así que cada uno dice cómo se coloca respecto al
@@ -37,7 +43,9 @@
 
 /* Un cuadro de animación */
 typedef struct {
-	const uint8_t *px;    /* w * h índices de paleta (0 = transparente)      */
+	const uint8_t *datos; /* w * h índices de paleta (0 = transparente),
+	                         comprimidos (ver recursos.h)                    */
+	uint16_t tam;         /* bytes comprimidos                               */
 	uint8_t  w, h;        /* tamaño del cuadro, en píxeles                   */
 	uint8_t  eje;         /* columnas que quedan detrás del centro del cuerpo */
 } Cuadro;
@@ -64,7 +72,13 @@ typedef struct {
 } ZonaGolpe;
 
 typedef struct {
+	char      nombre[16];     /* el que se ve en el menú                     */
 	const uint16_t *paleta;   /* colores RGB565 (la entrada 0 no se usa)     */
+	const uint16_t *paletas;  /* todas las paletas del archivo, seguidas     */
+	uint16_t  nColores;       /* colores de cada paleta                      */
+	uint8_t   nPaletas;
+	uint16_t  maxCuadro;      /* w * h del cuadro más grande: lo que mide el
+	                             búfer donde se descomprime                  */
 	uint8_t   cuerpoW;        /* caja de colisión del cuerpo                 */
 	uint8_t   cuerpoH;
 	uint8_t   margen;         /* lo más que el dibujo sobresale por detrás
@@ -82,10 +96,11 @@ typedef struct {
 	Animacion ataque[2];      /* [0] golpe, [1] patada. Si n = 0, el ataque
 	                             se dibuja como un rectángulo                */
 	ZonaGolpe zona[2];        /* [0] golpe, [1] patada                       */
+	Animacion salto;          /* en el aire: los cuadros se reparten según la
+	                             velocidad vertical, del despegue (cuadro 0)
+	                             al aterrizaje (el último). Si n = 0, se ve
+	                             la guardia                                  */
 } Personaje;
 
-extern const Personaje ryu;       /* Ryu, colores originales                 */
-extern const Personaje ryuAzul;   /* los mismos cuadros de Ryu, traje azul   */
-extern const Personaje deeJay;    /* Dee Jay                                 */
 
 #endif /* INC_SPRITES_H_ */
