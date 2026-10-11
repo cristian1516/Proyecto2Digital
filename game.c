@@ -1,8 +1,5 @@
 /*
  * game.c
- *
- * Copiar en Core/Src.
- *
  * Estructura:
  *   - Game_Update() corre un tick fijo de 33 ms sin bloquear (no usa HAL_Delay).
  *   - Máquina de estados del juego: MENU -> PELEA -> GANADOR -> MENU.
