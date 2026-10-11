@@ -1,9 +1,8 @@
 /*
- * personajes.c - Carga de personajes (.SPR) de la microSD. Ver personajes.h.
- *
  * Encabezado del archivo (56 bytes, little-endian):
  *   0-3 "PJ01" | 4-19 nombre | 20 cuerpoW | 21 cuerpoH | 22 margen
  *   23 nPaletas | 24-25 nColores | 26-27 nCuadros | 28-29 maxCuadro
+ *   30-31 salto {n, activo} (0 en los archivos viejos)
  *   32-43 seis animaciones {n, activo}: caminar, ko, cubre, dano, golpe,
  *         patada | 44-51 dos zonas {dx, dy, w, h} | 52-55 tamDatos
  * Después: las paletas, en "PJ02" el nombre de cada paleta (16 bytes cada
@@ -17,7 +16,7 @@
 
 #define ENCABEZADO   56
 #define CUADRO_TABLA 8
-#define N_ANIM       6
+#define N_ANIM       7      /* caminar, ko, cubre, dano, golpe, patada, salto */
 
 typedef struct {
 	char     nombre[16];
@@ -47,7 +46,9 @@ static uint8_t LeerEncabezado(Encabezado *e) {
 	e->nColores  = LE16(b + 24);
 	e->nCuadros  = LE16(b + 26);
 	e->maxCuadro = LE16(b + 28);
-	memcpy(e->anim, b + 32, sizeof e->anim);
+	memcpy(e->anim, b + 32, 12);           /* las 6 primeras */
+	e->anim[6][0] = b[30];                 /* el salto */
+	e->anim[6][1] = b[31];
 	memcpy(e->zona, b + 44, sizeof e->zona);
 	e->tamDatos  = LE32(b + 52);
 	e->tamNombres = (b[3] == '2') ? (uint32_t) e->nPaletas * 16u : 0;
@@ -133,6 +134,7 @@ static uint8_t Cargar(Personaje *pj, uint8_t paleta) {
 	destino[3] = &pj->dano;
 	destino[4] = &pj->ataque[0];
 	destino[5] = &pj->ataque[1];
+	destino[6] = &pj->salto;
 	for (uint8_t a = 0; a < N_ANIM; a++) {
 		destino[a]->n       = e.anim[a][0];
 		destino[a]->activo  = e.anim[a][1];
