@@ -1,8 +1,5 @@
 /*
- * recursos.c - Almacén de RAM, tarjeta SD y descompresión. Ver recursos.h.
- *
- * Usa FatFs tal como lo genera CubeMX (modo "User-defined") con el driver
- * fatfs_sd.c sobre SPI1. Solo hay un archivo abierto a la vez (USERFile).
+ * recursos.c - Almacén de RAM, tarjeta SD y descompresión.
  */
 #include <string.h>
 #include "main.h"
@@ -10,9 +7,7 @@
 
 extern SPI_HandleTypeDef hspi1;
 
-/* ------------------------------------------------------------------------ */
 /* Almacén de RAM                                                           */
-/* ------------------------------------------------------------------------ */
 
 /* uint64_t para que quede alineado a 8 bytes */
 static uint64_t almacen[RAM_ALMACEN / 8];
@@ -40,9 +35,7 @@ uint32_t Ram_Libre(void) {
 	return RAM_ALMACEN - usado;
 }
 
-/* ------------------------------------------------------------------------ */
 /* Tarjeta                                                                   */
-/* ------------------------------------------------------------------------ */
 
 static uint8_t montada;         /* 1 = la tarjeta ya está montada */
 static uint8_t codigoFatFs;
@@ -176,7 +169,7 @@ uint8_t SD_Listar(const char *ext, char nombres[][13], uint8_t max) {
 /* Descompresión                                                             */
 /* ------------------------------------------------------------------------ */
 
-uint16_t vistaPal[256];
+AreaTrabajo trabajo;
 
 uint8_t LZ_Descomprimir(const uint8_t *in, uint32_t tam, uint8_t *out, uint32_t n) {
 	const uint8_t *finIn = in + tam;
@@ -220,7 +213,7 @@ uint8_t LZ_Descomprimir(const uint8_t *in, uint32_t tam, uint8_t *out, uint32_t 
 }
 
 /* Lectura del archivo abierto en pedazos pequeños */
-static uint8_t  entrada[256];
+#define entrada (trabajo.menu.entrada)
 static uint16_t entPos, entLen;
 static uint8_t  entError;
 
@@ -243,13 +236,13 @@ void LZ_FlujoIniciar(void) {
 }
 
 uint8_t LZ_Flujo(uint32_t n, uint16_t w, uint16_t fila0, LZ_FnFila fila, void *ctx) {
-	static uint8_t anillo[1024];        /* lo último descomprimido (la ventana) */
-	static uint8_t renglon[320];
+	uint8_t *const anillo = trabajo.menu.anillo;   /* la ventana (1024 bytes) */
+	uint8_t *const renglon = trabajo.menu.renglon;
 	uint32_t hechos = 0;
 	uint16_t enRenglon = 0, k = fila0;
 	uint8_t banderas = 0, bits = 0;
 
-	if (w == 0 || w > sizeof renglon)
+	if (w == 0 || w > sizeof trabajo.menu.renglon)
 		return 0;
 
 	while (hechos < n && !entError) {
