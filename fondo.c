@@ -1,12 +1,10 @@
 /*
- * fondo.c - Escenarios de la microSD (.ESC). Ver fondo.h.
+ * fondo.c - Escenarios de la microSD (.ESC).
  *
  * Encabezado del archivo (36 bytes, little-endian):
  *   0-3 "ESC1" | 4-19 nombre | 20-21 ancho (320) | 22-23 alto
  *   24-25 nColores | 26-27 piso | 28-29 filasBloque | 30-31 nBloques
  *   32-35 tamDatos
- * Después: la paleta (nColores x 2 bytes), el tamaño de cada bloque
- * comprimido (2 bytes cada uno) y los bloques.
  */
 #include <string.h>
 #include "main.h"
@@ -25,8 +23,7 @@ static uint16_t nBloques;
 static const uint8_t *datos;    /* bloques comprimidos, en el almacén       */
 static uint32_t *inicio;        /* dónde empieza cada bloque (nBloques + 1) */
 
-/* Último bloque descomprimido. Comparte memoria con los menús (ver
- * AreaTrabajo en recursos.h): Fondo_Reiniciar() lo da por perdido. */
+/* Último bloque descomprimido. Comparte memoria con los menús*/
 _Static_assert(sizeof trabajo.bloque >= FONDO_W * FONDO_FILAS_BLOQUE, "AreaTrabajo muy chica");
 #define bloque (trabajo.bloque)
 static int16_t  bloqueAct = -1;
@@ -194,7 +191,7 @@ uint8_t Fondo_Nombre(const char *archivo, char nombre[16]) {
 	return res;
 }
 
-/* ---- Vista previa del menú ----------------------------------------------- */
+/* Vista previa del menú  */
 
 static void FilaVista(const uint8_t *px, uint16_t k, void *ctx) {
 	int16_t y = (int16_t) (*(const uint16_t *) ctx + k);
