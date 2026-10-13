@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-convertir.py - Genera los archivos de la microSD del juego (Proyecto 2, IE3054).
+convertir.py - Genera los archivos de la microSD del juego.
 
 Los personajes y los escenarios ya no van en la flash: se guardan en la SD,
 comprimidos, y el STM32 carga a la RAM solo los que se eligen en el menú.
@@ -28,9 +28,6 @@ Uso (desde esta carpeta, con Python 3):
         python convertir.py ver RYU.SPR
         python convertir.py ver RYU.ESC
 
-Copiar los .SPR y .ESC a la raíz de la microSD (FAT32). El menú del juego
-muestra todos los que encuentre; para agregar uno basta con copiarlo.
-
 Formato de compresión (LZ, el mismo que descomprime recursos.c):
   Grupos de 8 elementos. Cada grupo empieza con un byte de banderas; el bit 0
   es el primer elemento. Bit en 1: un byte literal. Bit en 0: una copia de
@@ -44,9 +41,8 @@ import re
 import struct
 import sys
 
-# ---------------------------------------------------------------------------
+
 # Compresor LZ
-# ---------------------------------------------------------------------------
 
 VENTANA = 1024          # 10 bits de distancia
 MIN_COPIA = 3
@@ -153,11 +149,10 @@ def descomprimir(datos: bytes, n: int) -> bytes:
     return bytes(sal)
 
 
-# ---------------------------------------------------------------------------
+
 # Personajes (.SPR)
-# ---------------------------------------------------------------------------
 #
-#   bytes 0-3    'P' 'J' '0' '2'   (el firmware también acepta los 'PJ01' viejos)
+#   bytes 0-3    'P' 'J' '0' '1'
 #   4-19         nombre (ASCII, relleno con ceros)
 #   20, 21, 22   cuerpoW, cuerpoH, margen
 #   23           nPaletas
@@ -169,8 +164,6 @@ def descomprimir(datos: bytes, n: int) -> bytes:
 #   44-51        2 zonas de golpe {dx, dy, w, h}: golpe, patada
 #   52-55        tamDatos: bytes de cuadros comprimidos
 #   56           nPaletas * nColores colores RGB565
-#   después      nPaletas nombres de 16 bytes (ASCII, relleno con ceros): el
-#                nombre de cada versión de color en el menú ("RYU", "RYU AZUL")
 #   después      nCuadros * {w, h, eje, 0, tam (4 bytes)}, en el orden de
 #                las animaciones de arriba
 #   después      los cuadros comprimidos, uno tras otro
@@ -276,7 +269,7 @@ def escribir_spr(ruta, nombre, grupo, cuadros, pixeles):
         tabla += struct.pack('<BBBBI', w, h, eje, 0, len(z))
         datos += z
     max_cuadro = max(w * h for _, w, h, _ in frames)
-    enc = struct.pack('<4s16sBBBBHHHH', b'PJ02', nombre.encode('ascii')[:15],
+    enc = struct.pack('<4s16sBBBBHHHH', b'PJ01', nombre.encode('ascii')[:15],
                       base['cuerpoW'], base['cuerpoH'], base['margen'], len(paletas),
                       ncol, len(frames), max_cuadro, 0)
     for n, act in anims:
@@ -286,12 +279,11 @@ def escribir_spr(ruta, nombre, grupo, cuadros, pixeles):
     enc += struct.pack('<I', len(datos))
     assert len(enc) == 56
     pal = b''.join(struct.pack('<H', c) for p in paletas for c in p)
-    nombres = b''.join(nombre_bonito(pj['var']).encode('ascii')[:15].ljust(16, b'\0') for pj in grupo)
     with open(ruta, 'wb') as f:
-        f.write(enc + pal + nombres + tabla + datos)
+        f.write(enc + pal + tabla + datos)
     crudo = sum(w * h for _, w, h, _ in frames)
     ram = len(datos) + 12 * len(frames) + len(pal)
-    print(f'{ruta}: {" / ".join(nombre_bonito(pj["var"]) for pj in grupo)}, {len(frames)} cuadros, {len(paletas)} paleta(s). '
+    print(f'{ruta}: {nombre}, {len(frames)} cuadros, {len(paletas)} paleta(s). '
           f'Sin comprimir {crudo / 1024:.1f} kB -> {len(datos) / 1024:.1f} kB. '
           f'RAM al cargarlo: {ram / 1024:.1f} kB + {max_cuadro / 1024:.1f} kB por jugador que lo use')
 
@@ -314,9 +306,7 @@ def cmd_sprites(args):
         escribir_spr(os.path.join(args.salida, archivo), nombre_bonito(var), grupo, cuadros, pixeles)
 
 
-# ---------------------------------------------------------------------------
 # Escenarios (.ESC)
-# ---------------------------------------------------------------------------
 #
 #   bytes 0-3    'E' 'S' 'C' '1'
 #   4-19         nombre (ASCII, relleno con ceros)
@@ -446,9 +436,8 @@ def cmd_escenario(args):
           f'RAM al cargarlo: {ram / 1024:.1f} kB')
 
 
-# ---------------------------------------------------------------------------
+
 # Revisar un archivo
-# ---------------------------------------------------------------------------
 
 def cmd_ver(args):
     try:
@@ -472,14 +461,11 @@ def cmd_ver(args):
         im.putdata([a_rgb(pal[i]) for i in px])
         im.save(salida)
         print(f'{nombre.rstrip(bytes(1)).decode()}: {ancho}x{alto}, {ncol} colores, piso {piso} -> {salida}')
-    elif d[:4] in (b'PJ01', b'PJ02'):
+    elif d[:4] == b'PJ01':
         (nombre, cw, ch, margen, npal, ncol, ncu, maxc, _) = struct.unpack_from('<16sBBBBHHHH', d, 4)
         p = 56
         pals = [struct.unpack_from(f'<{ncol}H', d, p + 2 * ncol * k) for k in range(npal)]
         p += 2 * ncol * npal
-        if d[:4] == b'PJ02':
-            print('Versiones:', ', '.join(d[p + 16 * k:p + 16 * k + 16].rstrip(bytes(1)).decode() for k in range(npal)))
-            p += 16 * npal
         tabla = [struct.unpack_from('<BBBBI', d, p + 8 * k) for k in range(ncu)]
         p += 8 * ncu
         imgs = []
