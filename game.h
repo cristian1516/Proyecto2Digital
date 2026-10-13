@@ -1,7 +1,5 @@
 /*
  * game.h
- *
- * Motor del videojuego de pelea.
  */
 
 #ifndef INC_GAME_H_
