@@ -4907,9 +4907,7 @@ static const Cuadro deeJayKo[] = {
 
 static const Cuadro deeJayCubre[] = {
 	/* píxeles, ancho, alto, eje */
-	/* Solo la 2.a pose: con las dos alternando parecía que corría. Para
-	 * volver a usar las dos, agregar aquí deeJayCubre0 (60, 95, 30) y
-	 * poner 2 en .cubre */
+	/* Solo la 2.a pose: con las dos alternando parecía que corría.*/
 	{ deeJayCubre1, 50, 94, 26 },
 };
 
