@@ -4,9 +4,6 @@
  * descomprimida: se descomprime un bloque de 8 filas a la vez y se guarda
  * el último, porque Repintar() pide las filas en orden.
  *
- * Formato del archivo: ver herramientas/convertir.py (lo genera a partir de
- * un Fondo.bin viejo, de un arreglo de Bitmaps.h o de una imagen PNG).
- *
  * Si la imagen mide menos de 240 de alto se centra en la pantalla y lo que
  * sobra arriba y abajo queda negro.
  */
@@ -28,7 +25,7 @@ uint8_t Fondo_Cargar(const char *archivo);
 void Fondo_Quitar(void);
 
 /* Usa lo que sobra del almacén para guardar bloques ya descomprimidos y no
- * descomprimirlos en cada tick. Llamar después de cargar todo lo demás. */
+ * descomprimirlos en cada tick. Llamar después de cargar lo demás. */
 void Fondo_UsarRamLibre(void);
 
 /* Llamar al empezar cada pelea: los menús usaron la memoria del bloque */
