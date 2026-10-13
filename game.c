@@ -1,14 +1,15 @@
 /*
  * game.c
+ *
  * Estructura:
  *   - Game_Update() corre un tick fijo de 33 ms sin bloquear (no usa HAL_Delay).
  *   - Máquina de estados del juego: MENU -> PELEA -> GANADOR -> MENU.
  *   - Cada peleador tiene su propia máquina de estados.
- *   - Las colisiones usan AABB (cajas alineadas a los ejes), como en la clase.
+ *   - Las colisiones usan AABB (cajas alineadas a los ejes).
  *   - El dibujado solo repinta las zonas de la pantalla donde algo cambió.
  *
  * Controles: flechas para caminar y saltar, A golpe, B patada, y mantener
- * ABAJO para cubrirse (un golpe cubierto no quita vida).
+ * abajo o presionar R1 para cubrirse (un golpe cubierto no quita vida).
  *
  * Menús: TITULO -> ELEGIR PERSONAJES -> ELEGIR ESCENARIO -> PELEA. En los
  * menús, IZQ/DER cambian, A elige y B regresa. Cada jugador elige su
@@ -21,15 +22,15 @@
  *   - El CUERPO (cuerpoW x cuerpoH): es la caja de las colisiones. Con ella
  *     se decide si un golpe conecta y que los peleadores no se atraviesen.
  *   - El CUADRO que se dibuja: cambia de tamaño con la animación y es más
- *     ancho que el cuerpo (en el golpe y la patada, mucho más).
+ *     ancho que el cuerpo (en el golpe y la patada).
  *
- * La pantalla se arma por capas (escenario, un peleador, el otro), ver
- * Repintar(). Así el puño de uno puede pasar por encima del otro.
+ * La pantalla se arma por capas (escenario, un peleador, el otro).
+ *  Así el puño de uno puede pasar por encima del otro.
  *
- * Personajes (.SPR) y escenarios (.ESC) están en la microSD, comprimidos.
- * Al terminar de elegir se copian a la RAM solo los elegidos (personajes.c,
- * fondo.c, recursos.c) y durante la pelea ya no se toca la tarjeta. Si en
- * la siguiente pelea se elige lo mismo, no se vuelve a leer nada.
+ * Los personajes (.SPR) están en la flash, comprimidos (personajes_flash.c)
+ * y los escenarios (.ESC) en la microSD. Al terminar de elegir se copia a
+ * la RAM el escenario elegido (fondo.c) y durante la pelea ya no se toca la
+ * tarjeta. Si en la siguiente pelea se elige lo mismo, no se vuelve a leer.
  *
  * Cada jugador tiene un búfer donde se descomprime el cuadro que le toca
  * dibujar; solo se descomprime cuando el cuadro cambia.
@@ -41,11 +42,12 @@
 #include "ili9341.h"     /* también incluye main.h (HAL) */
 #include "sprites.h"
 #include "recursos.h"    /* almacén de RAM y tarjeta SD */
-#include "personajes.h"  /* personajes: de la microSD a la RAM */
+#include "personajes.h"  /* personajes: en la flash (personajes_flash.c) */
 #include "fondo.h"       /* escenario: de la microSD a la RAM */
 
 /* Cuántos archivos de cada tipo se muestran en el menú. Para agregar un
- * personaje o un escenario basta con copiar su archivo a la raíz de la SD. */
+ * escenario basta con copiarlo a la raíz de la SD, un personaje se agrega a
+ * la flash con herramientas/spr_a_c.py (o se copia su .SPR a la SD). */
 #define MAX_PJ         8     /* archivos .SPR                           */
 #define MAX_OP         12    /* opciones del menú: una por cada versión de
                                 color de cada personaje (RYU, RYU AZUL...) */
@@ -56,10 +58,10 @@
 
 #define ANCHO          320
 #define ALTO           240
-#define TICK_MS        33        /* ~30 cuadros por segundo                  */
+#define TICK_MS        33        /* 30 cuadros por segundo                  */
 #define TICKS_SEGUNDO  30
 #define MAX_PASOS      4         /* ticks de lógica que se pueden recuperar si
-                                    dibujar se atrasó (ver TickPelea)         */
+                                    dibujar se atrasó         */
 
 #define PISO_NORMAL    200       /* y de los pies si el escenario no la trae */
 #define X_INICIAL      20        /* al empezar, cuánto se separa cada peleador
@@ -74,9 +76,7 @@
 #define VEL_EMPUJE     2         /* px por tick de ese retroceso             */
 #define VEL_X          4         /* px por tick al caminar                   */
 #define VEL_SALTO      (-20)     /* velocidad inicial del salto (px/tick)    */
-#define GRAVEDAD       4         /* px/tick^2. Con -20 y 4: sube 60 px y dura
-                                    10 ticks (0.33 s). Antes -14 y 2: 56 px en
-                                    14 ticks, se sentía lento                 */
+#define GRAVEDAD       8         /* px/tick^2.               */
 #define VIDA_MAX       100
 #define TIEMPO_RONDA   60        /* segundos                                 */
 
@@ -134,7 +134,7 @@ typedef struct {
 
 /* Tiempos y daño de cada ataque, iguales para todos los personajes. Los
  * ticks "ini..fin" son los activos: solo ahí el ataque puede hacer daño. La
- * zona que golpea es de cada personaje (ZonaGolpe, en sprites.h). */
+ * zona que golpea es de cada personaje. */
 typedef struct {
 	uint8_t duracion, ini, fin;
 	uint8_t dano;
@@ -228,7 +228,7 @@ static volatile uint32_t teclaExpira[2][6];
 static volatile uint8_t  entradaReal;   /* ya llegó algo de un mando o la PC */
 
 
-/* Ganchos (se pueden redefinir en main.c)                                   */
+/* Ganchos (se pueden redefinir en main)                                   */
 
 __weak void Game_Sonido(uint8_t id)         { (void) id; }
 __weak void Game_Resultado(uint8_t ganador) { (void) ganador; }
@@ -349,7 +349,7 @@ static void ActualizarPeleador(Peleador *p, const Peleador *o) {
 	int16_t nx = p->x;
 	const int16_t suelo = pisoY - p->pj->cuerpoH;
 	/* El cuerpo no llega al borde de la pantalla: deja lugar para lo que el
-	 * dibujo sobresale por detrás (ver "margen" en sprites.h). */
+	 * dibujo sobresale por detrás. */
 	const int16_t xMin = p->pj->margen;
 	const int16_t xMax = ANCHO - p->pj->margen - p->pj->cuerpoW;
 
@@ -365,13 +365,16 @@ static void ActualizarPeleador(Peleador *p, const Peleador *o) {
 			Cambiar(p, P_CUBRE);       /* se cubre mientras mantenga ABAJO */
 		} else if (nuevo & BTN_A) {
 			Cambiar(p, P_GOLPE);
+			Game_Sonido(SND_ATAQUE);
 		} else if (nuevo & BTN_B) {
 			Cambiar(p, P_PATADA);
+			Game_Sonido(SND_ATAQUE);
 		} else {
 			if (in & BTN_IZQ) nx -= VEL_X;
 			if (in & BTN_DER) nx += VEL_X;
 			if (in & BTN_ARRIBA) {
 				Cambiar(p, P_SALTO);
+				Game_Sonido(SND_SALTO);
 				p->vy = VEL_SALTO;
 			} else {
 				p->estado = (nx != p->x) ? P_CAMINA : P_QUIETO;
@@ -451,11 +454,12 @@ static uint8_t Conecta(const Peleador *a, const Peleador *v) {
 
 /* El daño llega ya calculado si los dos se golpean en el mismo tick, al
  * aplicar el segundo golpe el atacante ya cambió de estado. */
-static void AplicarGolpe(Peleador *a, Peleador *v, uint8_t dano) {
+static void AplicarGolpe(Peleador *a, Peleador *v, uint8_t dano, uint8_t esPatada) {
 	a->conecto = 1;
 	if (v->estado == P_CUBRE) {
 		/* Golpe cubierto: no quita vida, solo lo empuja un poco hacia atrás */
 		v->empuje = TICKS_EMPUJE;
+		Game_Sonido(SND_CUBRE);
 		return;
 	}
 	v->vida -= dano;
@@ -465,7 +469,7 @@ static void AplicarGolpe(Peleador *a, Peleador *v, uint8_t dano) {
 		Game_Sonido(SND_KO);
 	} else {
 		Cambiar(v, P_DANO);
-		Game_Sonido(SND_GOLPE);
+		Game_Sonido(esPatada ? SND_PATADA : SND_GOLPE);
 	}
 }
 
@@ -572,9 +576,9 @@ static void PintarCapa(const Capa *k, int16_t x0, int16_t w, int16_t y) {
 	}
 }
 
-/* Repinta varias zonas de la pantalla con todo lo que debe verse en ellas.
+/* Repinta varias zonas de la pantalla con lo que debe verse en ellas.
  * Se avanza fila por fila de la pantalla y en cada una se pintan los
- * pedazos de todas las zonas que pasan por ahí: así cada fila del
+ * pedazos de todas las zonas que pasan por ahí, así cada fila del
  * escenario se descomprime una sola vez aunque las zonas se encimen. */
 static void RepintarZonas(const Caja *zs, uint8_t n) {
 	const uint8_t abajo = (uint8_t) (1 - encima);
@@ -908,9 +912,8 @@ static void DibujarPelea(void) {
 }
 
 
-/* ------------------------------------------------------------------------ */
+
 /* Textos                                                                    */
-/* ------------------------------------------------------------------------ */
 /* Copia el texto s al final de d (como máximo n letras) y devuelve dónde
  * quedó el final, para seguir pegando. */
 static char *Pegar(char *d, const char *s, uint8_t n) {
@@ -949,9 +952,8 @@ static void Centrado(const char *t, int16_t y, uint8_t tam, uint16_t color, uint
 	TextoEn(t, 0, ANCHO, y, tam, color, fondo);
 }
 
-/* ------------------------------------------------------------------------ */
+
 /* Archivos de la SD                                                         */
-/* ------------------------------------------------------------------------ */
 
 /* "RYU.SPR" -> "RYU": nombre para mostrar si el archivo no trae uno */
 static void SinExtension(char *d, const char *archivo) {
@@ -1110,9 +1112,8 @@ static uint8_t CargarPelea(void) {
 	return REC_OK;
 }
 
-/* ------------------------------------------------------------------------ */
+
 /* Botones en los menús                                                      */
-/* ------------------------------------------------------------------------ */
 
 /* Botones que el jugador j acaba de presionar (flanco de subida) */
 static uint8_t Nuevos(uint8_t j) {
@@ -1130,9 +1131,8 @@ static uint8_t PresionaronB(void) {
 	return (nuevo & BTN_A) != 0;
 }
 
-/* ------------------------------------------------------------------------ */
 /* Estados del juego                                                         */
-/* ------------------------------------------------------------------------ */
+
 
 static void EntrarElegirPj(void);
 static void EntrarElegirEsc(void);
@@ -1148,6 +1148,15 @@ static void DibujarEstadoSD(void) {
 		Pegar(t, ")", 40);
 		Centrado(txt, 200, 1, C_J1, C_NEGRO);
 		Centrado("COPIA LOS .SPR Y .ESC A LA SD", 214, 1, C_GRIS, C_NEGRO);
+		return;
+	}
+	if (nEsc == 0) {
+		/* Los personajes están en la flash: se puede jugar con fondo liso */
+		t = Pegar(txt, "NO HAY ESCENARIOS EN LA SD (FATFS ", 40);
+		t = PegarNum(t, SD_CodigoFatFs());
+		Pegar(t, ")", 40);
+		Centrado(txt, 200, 1, C_J1, C_NEGRO);
+		Centrado("COPIA LOS .ESC A LA SD", 214, 1, C_GRIS, C_NEGRO);
 		return;
 	}
 	t = Pegar(txt, "SD: ", 40);
@@ -1166,7 +1175,7 @@ static void EntrarTitulo(void) {
 	LCD_Print("STREET FIGHTER", 48, 70, 2, C_AMARILLO, C_NEGRO);
 	LCD_Print("J1 vs J2", 96, 100, 2, C_BLANCO, C_NEGRO);
 	DibujarEstadoSD();
-	Game_Sonido(SND_MENU);
+	Game_Sonido(MUS_TITULO);
 }
 
 static void TickTitulo(void) {
@@ -1177,7 +1186,8 @@ static void TickTitulo(void) {
 		LCD_Print("          ", 80, 160, 2, C_BLANCO, C_NEGRO);
 
 	if (PresionaronB()) {
-		if (nPj == 0) {                 /* quizá ya metieron la tarjeta */
+		Game_Sonido(SND_ELEGIR);
+		if (nPj == 0 || nEsc == 0) {    /* quizá ya metieron la tarjeta */
 			BuscarArchivos();
 			DibujarEstadoSD();
 		}
@@ -1186,7 +1196,7 @@ static void TickTitulo(void) {
 	}
 }
 
-/* ---- Elegir personajes -------------------------------------------------- */
+/*  Elegir personajes  */
 
 #define PANEL_W   144
 #define PANEL_Y   32
@@ -1228,6 +1238,7 @@ static void DibujarPanel(uint8_t j) {
 }
 
 static void EntrarElegirPj(void) {
+	Game_Sonido(MUS_ELEGIR);        /* si ya estaba sonando, sigue sin reiniciarse */
 	estadoJuego = EST_ELEGIR_PJ;
 	ticksEstado = 0;
 	listo[0] = listo[1] = 0;
@@ -1262,10 +1273,12 @@ static void TickElegirPj(void) {
 		}
 		if (n & BTN_A) {
 			listo[j] = 1;
+			Game_Sonido(SND_ELEGIR);
 			DibujarListo(j);
 			continue;
 		}
 		if ((n & (BTN_IZQ | BTN_DER)) && nOp > 1) {
+			Game_Sonido(SND_CURSOR);
 			if (n & BTN_IZQ)
 				eleccion[j] = (uint8_t) ((eleccion[j] + nOp - 1) % nOp);
 			else
@@ -1282,7 +1295,7 @@ static void TickElegirPj(void) {
 	}
 }
 
-/* ---- Elegir escenario --------------------------------------------------- */
+/* Elegir escenario  */
 
 static void DibujarEscenario(void) {
 	char txt[24];
@@ -1317,7 +1330,7 @@ static void EntrarElegirEsc(void) {
 	DibujarEscenario();
 }
 
-/* ---- Aviso de error al cargar --------------------------------------------- */
+/* Aviso de error al cargar  */
 
 static void EntrarAviso(void) {
 	estadoJuego = EST_AVISO;
@@ -1336,7 +1349,7 @@ static void TickAviso(void) {
 		EntrarElegirPj();
 }
 
-/* ---- Pelea ---------------------------------------------------------------- */
+/*  Pelea	*/
 
 static void EntrarPelea(void) {
 	estadoJuego = EST_PELEA;
@@ -1379,8 +1392,9 @@ static void EntrarPelea(void) {
 	DibujarVida(1);
 	DibujarTiempo();
 	DibujarPelea();
-	Game_Sonido(SND_PELEA);
-	ultimoTick = HAL_GetTick();     /* dibujar todo tardó: empezar de cero */
+	/* La música del mapa: MUS_MAPA + número de escenario */
+	Game_Sonido((uint8_t) (MUS_MAPA + ((nEsc > 0) ? escElegido : 0)));
+	ultimoTick = HAL_GetTick();     /* dibujar tardó: empezar de cero */
 }
 
 static void TickElegirEsc(void) {
@@ -1388,11 +1402,13 @@ static void TickElegirEsc(void) {
 	if (n & BTN_B) {
 		EntrarElegirPj();
 	} else if (n & BTN_A) {
+		Game_Sonido(SND_ELEGIR);
 		if (CargarPelea() == REC_OK)
 			EntrarPelea();
 		else
 			EntrarAviso();
 	} else if ((n & (BTN_IZQ | BTN_DER)) && nEsc > 1) {
+		Game_Sonido(SND_CURSOR);
 		if (n & BTN_IZQ)
 			escElegido = (uint8_t) ((escElegido + nEsc - 1) % nEsc);
 		else
@@ -1413,7 +1429,7 @@ static void EntrarGanador(void) {
 		LCD_Print(ganador == 1 ? "JUGADOR 1 GANA" : "JUGADOR 2 GANA", 48, 90, 2,
 				ganador == 1 ? C_J1 : C_J2, C_NEGRO);
 	LCD_Print("A: MENU", 104, 150, 2, C_BLANCO, C_NEGRO);
-	Game_Sonido(SND_VICTORIA);
+	Game_Sonido(MUS_GANADOR);
 	if (!demo)
 		Game_Resultado(ganador);
 }
@@ -1447,8 +1463,9 @@ static uint8_t LogicaPelea(void) {
 	 *    dos golpes simultáneos se conecten ambos. */
 	uint8_t g0 = Conecta(&pl[0], &pl[1]);
 	uint8_t g1 = Conecta(&pl[1], &pl[0]);
-	if (g0) AplicarGolpe(&pl[0], &pl[1], g0);
-	if (g1) AplicarGolpe(&pl[1], &pl[0], g1);
+	const uint8_t p0 = (pl[0].estado == P_PATADA), p1 = (pl[1].estado == P_PATADA);
+	if (g0) AplicarGolpe(&pl[0], &pl[1], g0, p0);
+	if (g1) AplicarGolpe(&pl[1], &pl[0], g1, p1);
 
 	/* 4. Reloj y fin de ronda */
 	if (!finRonda) {
@@ -1490,9 +1507,7 @@ static void TickGanador(void) {
 		EntrarElegirPj();
 }
 
-/* ------------------------------------------------------------------------ */
 /* Funciones públicas                                                        */
-/* ------------------------------------------------------------------------ */
 
 void Game_Init(void) {
 	BuscarArchivos();
