@@ -24,7 +24,6 @@
 /* USER CODE BEGIN Includes */
 #include "ili9341.h"
 #include "game.h"
-#include "fondo.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -35,31 +34,20 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 /*
- *   ENTRADA_PC     USART2 (PA2/PA3, el cable USB del ST-LINK), 115200,
+
  *                  con interrupción global. Teclado de la PC para pruebas.
  *   ENTRADA_ESP32  USART3 en PC10 (TX) / PC11 (RX), 115200, con interrupción
  *                  global. Recibe 0xFF, J1, J2 del ESP32 receptor.
- *   SALIDA_AUDIO   UART5 TX en PC12, 115200. Envía el ID de sonido a la
- *                  Nucleo 2.
+ *   SALIDA_AUDIO   UART5 TX en PC12, 115200. Envía los comandos de
+ *                  sonidos.h a la Nucleo de audio.
  */
 #define ENTRADA_PC     0
 #define ENTRADA_ESP32  1
-#define SALIDA_AUDIO   0
+#define SALIDA_AUDIO   1
 
-/* Grabador de escenario.
- *
- *   1  Al encender convierte el arreglo Escenario2 (Bitmaps.h, en la flash)
- *      y lo guarda en la microSD como "Fondo.bin". La pantalla dice si
- *      quedó guardado o qué error hubo. Basta hacerlo una vez por imagen.
- *   0  Uso normal: el juego lee "Fondo.bin" de la SD y Bitmaps.h ya no se
- *      compila, así que el escenario deja de ocupar 141 kB de flash.
- */
-#define GRABAR_FONDO   1
-
-#if GRABAR_FONDO
-#include "Bitmaps.h"             /* aquí está definido Escenario2 */
-#define GRABAR_ALTO    220       /* alto de Escenario2 (el ancho es 320) */
-#endif
+/* Personajes (.SPR) y escenarios (.ESC) están en la
+ * raíz de la microSD y el menú carga a la RAM solo los que se eligen. Los
+ * archivos se generan en la PC con herramientas/convertir.py. */
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -79,6 +67,9 @@ static uint8_t rxPC;      /* byte recibido de la terminal de la PC */
 #if ENTRADA_ESP32
 static uint8_t rxESP;     /* byte recibido del ESP32 receptor */
 #endif
+#if SALIDA_AUDIO
+UART_HandleTypeDef huart5;   /* hacia la Nucleo de audio */
+#endif
 
 /* USER CODE END PV */
 
@@ -93,7 +84,31 @@ static void MX_USART3_UART_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+#if SALIDA_AUDIO
+/* UART5 solo para transmitir: TX en PC12 (función alterna 8), 115200 8N1.*/
+static void Audio_UART5_Init(void) {
+  GPIO_InitTypeDef g = {0};
+  __HAL_RCC_UART5_CLK_ENABLE();
+  __HAL_RCC_GPIOC_CLK_ENABLE();
+  g.Pin = GPIO_PIN_12;
+  g.Mode = GPIO_MODE_AF_PP;
+  g.Pull = GPIO_PULLUP;
+  g.Speed = GPIO_SPEED_FREQ_HIGH;
+  g.Alternate = GPIO_AF8_UART5;
+  HAL_GPIO_Init(GPIOC, &g);
 
+  huart5.Instance = UART5;
+  huart5.Init.BaudRate = 115200;
+  huart5.Init.WordLength = UART_WORDLENGTH_8B;
+  huart5.Init.StopBits = UART_STOPBITS_1;
+  huart5.Init.Parity = UART_PARITY_NONE;
+  huart5.Init.Mode = UART_MODE_TX;
+  huart5.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart5.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart5) != HAL_OK)
+    Error_Handler();
+}
+#endif
 /* USER CODE END 0 */
 
 /**
@@ -130,30 +145,11 @@ int main(void)
   MX_USART3_UART_Init();
   /* USER CODE BEGIN 2 */
   LCD_Init();
-
-#if GRABAR_FONDO
-  /* Guarda el escenario en la SD y avisa en pantalla cómo salió */
-  {
-    uint8_t r;
-    LCD_Clear(0x0000);
-    LCD_Print("GUARDANDO FONDO", 40, 90, 2, 0xFFFF, 0x0000);
-    r = Fondo_Guardar("Fondo.bin", Escenario2, GRABAR_ALTO);
-    if (r == FONDO_OK) {
-      LCD_Print("FONDO GUARDADO ", 40, 90, 2, 0x07E0, 0x0000);
-    } else {
-      /* Primer número: error de fondo.h. Segundo: código de FatFs. */
-      char txt[] = "ERROR 0  FATFS 00";
-      txt[6]  = (char) ('0' + r);
-      txt[15] = (char) ('0' + Fondo_CodigoFatFs() / 10 % 10);
-      txt[16] = (char) ('0' + Fondo_CodigoFatFs() % 10);
-      LCD_Print("NO SE GUARDO   ", 40, 90, 2, 0xF800, 0x0000);
-      LCD_Print(txt, 24, 120, 2, 0xFFFF, 0x0000);
-    }
-    HAL_Delay(3000);
-  }
+#if SALIDA_AUDIO
+  Audio_UART5_Init();
 #endif
 
-  /* Carga el escenario de la SD (si no quedó cargado arriba) y abre el menú */
+  /* Busca en la SD los personajes y escenarios y abre el menú */
   Game_Init();
 
   /* Recepción por interrupción, un byte a la vez */
@@ -388,7 +384,8 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart) {
 #endif
 
 #if SALIDA_AUDIO
-/* Reemplaza al gancho "weak" de game.c: manda el ID de sonido a la Nucleo 2 */
+/* Reemplaza al gancho "weak" de game.c: manda el comando de sonido a la
+ * Nucleo de audio (1 byte tarda 87 us; no detiene el juego) */
 void Game_Sonido(uint8_t id) {
   HAL_UART_Transmit(&huart5, &id, 1, 2);
 }
