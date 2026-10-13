@@ -20,9 +20,8 @@ uint8_t Personaje_Cargar(const char *archivo, Personaje *pj, uint8_t paleta);
 /* Cambia la paleta de un personaje ya cargado (si no existe, usa la 0) */
 void Personaje_Paleta(Personaje *pj, uint8_t paleta);
 
-/* Lee el nombre de cada versión de color del personaje (el que se muestra
- * en el menú, 16 bytes con el 0 final). Guarda hasta "max" y en *nPaletas
- * cuántas guardó. */
+/* Lee el nombre de cada versión de color del personaje
+Guarda hasta "max" y en *nPaletas cuántas guardó. */
 uint8_t Personaje_Nombres(const char *archivo, char nombres[][16], uint8_t max,
 		uint8_t *nPaletas);
 
