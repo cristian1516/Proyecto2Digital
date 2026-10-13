@@ -2404,9 +2404,7 @@ static const Cuadro ryuDano[] = {
 	{ ryuDano2, 69, 92, 40 },
 };
 
-/* ======================================================================== */
-/* Dee Jay (achicado a la estatura de Ryu: escala 0.921)                    */
-/* ======================================================================== */
+/* Dee Jay (angel) */
 
 /* Colores en RGB565. La entrada 0 no se usa (transparente). */
 static const uint16_t deeJayPaleta[16] = {
