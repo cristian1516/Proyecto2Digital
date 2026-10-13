@@ -1,8 +1,7 @@
 /*
  * game.h
  *
- * Motor del videojuego de pelea (Proyecto 2, IE3054).
- * Copiar en Core/Inc.
+ * Motor del videojuego de pelea.
  */
 
 #ifndef INC_GAME_H_
@@ -20,15 +19,9 @@
 #define BTN_A       0x10   /* golpe  */
 #define BTN_B       0x20   /* patada */
 
-/* IDs de sonido que se envían a la Nucleo 2 (1 byte por UART) */
-enum {
-	SND_SILENCIO = 0,
-	SND_MENU,
-	SND_PELEA,
-	SND_GOLPE,
-	SND_KO,
-	SND_VICTORIA
-};
+/* IDs de sonido que se envían a la Nucleo de audio (1 byte por UART).
+ * Están en sonidos.h, que es el mismo archivo en los dos proyectos. */
+#include "sonidos.h"
 
 /* Llamar una vez, después de LCD_Init() */
 void Game_Init(void);
@@ -43,7 +36,7 @@ void Game_TeclaPC(uint8_t c);   /* tecla recibida de la terminal de la PC */
 
 /* Ganchos: están definidos como "weak" en game.c y no hacen nada.
  * Si se definen en otro archivo (por ejemplo main.c), se usa esa versión. */
-void Game_Sonido(uint8_t id);         /* enviar el ID de sonido a la Nucleo 2 */
+void Game_Sonido(uint8_t id);         /* enviar un comando de sonidos.h a la Nucleo de audio */
 void Game_Resultado(uint8_t ganador); /* 1, 2 o 0 = empate; guardar en la SD  */
 
 #endif /* INC_GAME_H_ */
