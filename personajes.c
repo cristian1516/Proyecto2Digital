@@ -1,4 +1,12 @@
 /*
+ * personajes.c - Carga de personajes (.SPR). Ver personajes.h.
+ *
+ * Los personajes están en la flash (personajes_flash.c): Personaje_Cargar
+ * deja las paletas y los cuadros comprimidos donde están, en la flash, y
+ * solo pide RAM para la tabla de cuadros (12 bytes por cuadro). Si un .SPR
+ * viene de la SD (uno extra que no está en la flash) se copia a la RAM
+ * como antes.
+ *
  * Encabezado del archivo (56 bytes, little-endian):
  *   0-3 "PJ01" | 4-19 nombre | 20 cuerpoW | 21 cuerpoH | 22 margen
  *   23 nPaletas | 24-25 nColores | 26-27 nCuadros | 28-29 maxCuadro
@@ -69,9 +77,11 @@ static uint8_t LeerEncabezado(Encabezado *e) {
 
 static uint8_t Cargar(Personaje *pj, uint8_t paleta) {
 	Encabezado e;
-	uint16_t *paletas;
+	const uint16_t *paletas;
 	Cuadro   *cuadros;
-	uint8_t  *datos;
+	const uint8_t *datos;
+	const uint8_t *flash;
+	uint32_t  quedan = 0, tamPal;
 	uint32_t  offset = 0;
 	uint8_t   res;
 	Animacion *destino[N_ANIM];
@@ -81,20 +91,34 @@ static uint8_t Cargar(Personaje *pj, uint8_t paleta) {
 	if (res != REC_OK)
 		return res;
 
-	paletas = Ram_Pedir((uint32_t) e.nPaletas * e.nColores * 2u);
+	tamPal = (uint32_t) e.nPaletas * e.nColores * 2u;
+	flash = SD_Directo(&quedan);
+	if (flash != NULL) {
+		/* En la flash: las paletas se usan ahí mismo */
+		if (quedan < tamPal || ((uintptr_t) flash & 1u))
+			return REC_ERR_FORMATO;
+		paletas = (const uint16_t *) flash;
+		if (SD_Saltar(ENCABEZADO + tamPal) != REC_OK)
+			return REC_ERR_DATOS;
+	} else {
+		uint16_t *p = Ram_Pedir(tamPal);
+		if (p == NULL)
+			return REC_ERR_RAM;
+		if (SD_Leer(p, tamPal) != REC_OK)
+			return REC_ERR_DATOS;
+		paletas = p;
+	}
 	cuadros = Ram_Pedir((uint32_t) e.nCuadros * sizeof(Cuadro));
-	datos   = Ram_Pedir(e.tamDatos);
-	if (paletas == NULL || cuadros == NULL || datos == NULL)
+	if (cuadros == NULL)
 		return REC_ERR_RAM;
 
-	if (SD_Leer(paletas, (uint32_t) e.nPaletas * e.nColores * 2u) != REC_OK)
-		return REC_ERR_DATOS;
 	/* Los nombres de las paletas solo se usan en el menú: se saltan */
 	if (e.tamNombres > 0 && SD_Saltar(ENCABEZADO + (uint32_t) e.nPaletas * e.nColores * 2u
 			+ e.tamNombres) != REC_OK)
 		return REC_ERR_DATOS;
 
-	/* Tabla de cuadros: tamaño y dónde queda cada uno dentro de "datos" */
+	/* Tabla de cuadros: tamaño y dónde queda cada uno dentro de "datos".
+	 * Primero solo se revisa; las direcciones se ponen al final. */
 	for (uint16_t i = 0; i < e.nCuadros; i++) {
 		uint8_t t[CUADRO_TABLA];
 		uint32_t tam;
@@ -104,7 +128,7 @@ static uint8_t Cargar(Personaje *pj, uint8_t paleta) {
 		if (t[0] == 0 || t[1] == 0 || (uint32_t) t[0] * t[1] > e.maxCuadro
 				|| tam == 0 || tam > 0xFFFFu || offset + tam > e.tamDatos)
 			return REC_ERR_FORMATO;
-		cuadros[i].datos = datos + offset;
+		cuadros[i].datos = (const uint8_t *) (uintptr_t) offset;   /* por ahora */
 		cuadros[i].tam   = (uint16_t) tam;
 		cuadros[i].w     = t[0];
 		cuadros[i].h     = t[1];
@@ -114,9 +138,23 @@ static uint8_t Cargar(Personaje *pj, uint8_t paleta) {
 	if (offset != e.tamDatos)
 		return REC_ERR_FORMATO;
 
-	/* Los cuadros comprimidos: una sola lectura, directo a la RAM */
-	if (SD_Leer(datos, e.tamDatos) != REC_OK)
-		return REC_ERR_DATOS;
+	flash = SD_Directo(&quedan);
+	if (flash != NULL) {
+		/* En la flash: los cuadros comprimidos se quedan ahí */
+		if (quedan < e.tamDatos)
+			return REC_ERR_DATOS;
+		datos = flash;
+	} else {
+		/* De la SD: una sola lectura, directo a la RAM */
+		uint8_t *d = Ram_Pedir(e.tamDatos);
+		if (d == NULL)
+			return REC_ERR_RAM;
+		if (SD_Leer(d, e.tamDatos) != REC_OK)
+			return REC_ERR_DATOS;
+		datos = d;
+	}
+	for (uint16_t i = 0; i < e.nCuadros; i++)
+		cuadros[i].datos = datos + (uintptr_t) cuadros[i].datos;
 
 	/* Todo bien: llenar el personaje */
 	memset(pj, 0, sizeof *pj);
@@ -198,6 +236,17 @@ uint8_t Personaje_Nombres(const char *archivo, char nombres[][16], uint8_t max,
 		}
 	}
 	SD_Cerrar();
+
+	/* Los de la flash pueden traer sus nombres en personajes_flash.c */
+	if (res == REC_OK) {
+		const PersonajeFlash *f = Flash_Buscar(archivo);
+		for (uint8_t i = 0; f != NULL && i < *nPaletas && i < 4; i++) {
+			if (f->nombres[i] != NULL && f->nombres[i][0] != 0) {
+				strncpy(nombres[i], f->nombres[i], 15);
+				nombres[i][15] = 0;
+			}
+		}
+	}
 	return res;
 }
 
