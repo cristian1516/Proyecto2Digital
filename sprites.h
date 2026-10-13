@@ -1,9 +1,10 @@
 /*
  * sprites.h - Personajes del juego.
  *
- * Los personajes ya no están en la flash: cada uno es un archivo .SPR en la
- * microSD (lo genera herramientas/convertir.py a partir de sprites.c) y se
- * copia a la RAM solo si se elige en el menú (personajes.c).
+ * Cada personaje es un archivo .SPR (lo genera herramientas/convertir.py a
+ * partir de sprites.c) que se guarda comprimido en la flash
+ * (personajes_flash.c, ver herramientas/spr_a_c.py). Se usa ahí mismo, sin
+ * copiarlo a la RAM (personajes.c).
  *
  * Cada personaje tiene una lista de cuadros por animación. Un cuadro es una
  * imagen de w x h con 1 byte por píxel: cada byte es un índice a la paleta
