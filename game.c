@@ -142,8 +142,8 @@ typedef struct {
 
 static const Ataque ATAQUES[2] = {
 	/* duracion ini fin dano */
-	{  8,       2,  4,   8 },   /* golpe  (A) */
-	{ 12,       4,  7,  14 },   /* patada (B) */
+	{  8,       2,  4,   5 },   /* golpe  (A) */
+	{ 12,       4,  7,  10 },   /* patada (B) */
 };
 
 /* Una capa es algo que se ve en pantalla: un cuadro de sprite o un
